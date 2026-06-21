@@ -7,10 +7,9 @@ compatible enough to drop into your existing scripts and muscle memory, but
 **parallel by default**, measurably faster, and with a few things the classic
 tool simply can't do.
 
-> **Status:** feature-complete for v1 (milestones M1–M5). GNU-compatible sort
-> with field keys and all type comparators, external merge sort, fused
-> `--top`/`--count`, CSV/JSON awareness, and UX polish — differentially tested
-> against GNU `sort` (130 cases). See the [roadmap](#roadmap).
+> **Status:** feature-complete for v1. GNU-compatible sort with field keys and
+> all type comparators, external merge sort, fused `--top`/`--count`, CSV/JSON
+> awareness, and UX polish — differentially tested against GNU `sort` (130 cases).
 
 [ripgrep]: https://github.com/BurntSushi/ripgrep
 [fd]: https://github.com/sharkdp/fd
@@ -60,6 +59,7 @@ Correctness is independently checked against GNU `sort` by
 ## Install
 
 ```sh
+cargo install xort       # from crates.io
 cargo install --path .   # from a checkout
 ```
 
@@ -125,20 +125,6 @@ output matches `LC_ALL=C sort`. The differential test
 ([`scripts/difftest.sh`](scripts/difftest.sh)) checks `xort` against GNU `sort`
 across random word/number inputs and flag combinations.
 
-## Roadmap
-
-- [x] **M1 — table stakes:** parallel in-memory sort, `-n -r -u -s -f -b -z -c -o`,
-      `--top`, `--stats`, differential testing.
-- [x] **M2 — GNU-compat depth:** `-k`/`-t` field keys, `-g -h -V -M`, `-m`,
-      `-S`/`-T` and external merge sort for inputs larger than RAM.
-- [x] **M3 — killer features:** `--header`, fused `--count` (built-in
-      `sort | uniq -c`).
-- [x] **M4 — structured formats:** CSV/TSV (sort by column name), JSON/JSONL.
-- [x] **M5 — UX polish:** rich `--check` diagnostics, colorized key highlight,
-      shell completions, man page.
-- [ ] **M6 — launch:** publish to crates.io, package for Homebrew/apt, write
-      the launch blog post around the benchmark numbers.
-
 ## Development
 
 ```sh
@@ -149,4 +135,4 @@ bash scripts/difftest.sh         # diff against GNU sort (requires `sort`)
 
 ## License
 
-MIT OR Unlicense, at your option.
+[MIT](LICENSE-MIT).
