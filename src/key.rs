@@ -290,6 +290,7 @@ impl Sorter {
     /// Compare two whole lines under this plan.
     #[inline]
     pub fn compare(&self, a: &[u8], b: &[u8]) -> Ordering {
+        let mut key_ord = Ordering::Equal;
         for key in &self.keys {
             let ka = extract(a, key, self.tab);
             let kb = extract(b, key, self.tab);
@@ -298,8 +299,22 @@ impl Sorter {
                 o = o.reverse();
             }
             if o != Ordering::Equal {
-                return o;
+                key_ord = o;
+                break;
             }
+        }
+        self.finish(key_ord, a, b)
+    }
+
+    /// Apply the whole-line last-resort tie-break on top of a key-level
+    /// ordering: when the keys compare equal and last-resort is not suppressed
+    /// (`-s`/`-u`), order by the raw lines under the global reverse flag. This
+    /// is the single home for that contract — the in-memory decorate-sort path
+    /// calls it too, so its semantics can never drift from `compare`.
+    #[inline]
+    pub fn finish(&self, key_ord: Ordering, a: &[u8], b: &[u8]) -> Ordering {
+        if key_ord != Ordering::Equal {
+            return key_ord;
         }
         if self.suppress_last_resort {
             return Ordering::Equal;

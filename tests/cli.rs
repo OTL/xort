@@ -592,3 +592,13 @@ fn external_multifile_missing_trailing_newline() {
     let _ = std::fs::remove_file(f1);
     let _ = std::fs::remove_file(f2);
 }
+
+#[test]
+fn external_line_longer_than_buffer() {
+    // A single line larger than the -S budget must still sort correctly
+    // (read_block keeps reading until it finds a terminator).
+    let big = "z".repeat(5000);
+    let input = format!("{big}\nb\na\n");
+    let out = run(&["-S", "100", "-"], &input);
+    assert_eq!(out, format!("a\nb\n{big}\n"));
+}

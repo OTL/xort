@@ -132,12 +132,18 @@ fn read_block(
         }
         block.extend_from_slice(&tmp[..n]);
     }
-    // Hit the budget mid-stream: split after the last complete line.
+    // Hit the budget mid-stream: split after the last complete line. `scanned`
+    // tracks the prefix already known to contain no terminator, so an
+    // oversized line (no terminator within budget) is scanned once overall
+    // rather than re-scanning the whole growing block on each read (O(n) not
+    // O(n^2)).
+    let mut scanned = 0;
     loop {
-        if let Some(p) = memchr::memrchr(terminator, block) {
-            *carry = block.split_off(p + 1);
+        if let Some(p) = memchr::memrchr(terminator, &block[scanned..]) {
+            *carry = block.split_off(scanned + p + 1);
             return Ok(false);
         }
+        scanned = block.len();
         // No terminator yet (a single line exceeds the budget) — keep reading.
         let n = r.read(&mut tmp)?;
         if n == 0 {
