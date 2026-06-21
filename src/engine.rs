@@ -316,7 +316,9 @@ fn single_key_order<'a>(
         .collect();
 
     // See `byte_order`: the unstable select_nth shortcut is unsound when
-    // stability or uniqueness is requested (`stable` already implies `-u`).
+    // stability or uniqueness is requested. Here `stable` is
+    // `suppress_last_resort`, which is set by `-s` or `-u`, so the single
+    // `!stable` guard already covers both.
     let fused_top = cfg.top.filter(|_| !stable);
     match fused_top {
         Some(n) => {
@@ -406,7 +408,9 @@ fn general_order<'a>(
     let mut recs: Vec<(usize, &[u8])> = (0..n).map(|i| (i * k, lines[i])).collect();
 
     // See `byte_order`: the unstable select_nth shortcut is unsound when
-    // stability or uniqueness is requested (`stable` already implies `-u`).
+    // stability or uniqueness is requested. Here `stable` is
+    // `suppress_last_resort`, which is set by `-s` or `-u`, so the single
+    // `!stable` guard already covers both.
     let fused_top = cfg.top.filter(|_| !stable);
     match fused_top {
         Some(top) => {

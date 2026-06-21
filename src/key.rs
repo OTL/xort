@@ -108,7 +108,7 @@ const KEY_OPT_LETTERS: &str = "bfghMnrV";
 /// Unlike GNU's lenient parser, an unknown option letter or a `.` with no
 /// following character position is rejected (exit 2), rather than silently
 /// ignored.
-pub fn parse_pos(s: &str) -> Result<(usize, usize, String), String> {
+pub(crate) fn parse_pos(s: &str) -> Result<(usize, usize, String), String> {
     let b = s.as_bytes();
     let mut i = 0;
     while i < b.len() && b[i].is_ascii_digit() {
