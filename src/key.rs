@@ -553,10 +553,12 @@ mod tests {
 
     #[test]
     fn extract_end_char_with_skip_eblanks() {
-        // -k2.2,2.3 with end-blank skipping resolves a char range inside field 2.
+        // -k2,2.3 (start char defaults to 1) with end-blank skipping. The start
+        // keeps field 2's leading blanks ("   "), while the end skips them
+        // before counting 3 chars into "bar", so the range is the 3 blanks plus
+        // "bar".
         let mut k = key(2, 1, Some(2), 3);
         k.skip_eblanks = true;
-        // field 2 is "  bar"; skip_eblanks moves past the blanks before counting.
         assert_eq!(extract(b"a   bar", &k, None), b"   bar");
     }
 
