@@ -62,6 +62,7 @@ jobs:
       - name: Coverage gate
         run: cargo llvm-cov --fail-under-lines 80 --lcov --output-path lcov.info
       - name: Upload coverage to Codecov
+        if: always()
         uses: codecov/codecov-action@v5
         with:
           files: lcov.info
