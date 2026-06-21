@@ -714,28 +714,24 @@ fn top_zero_emits_nothing() {
 
 #[test]
 fn merge_with_stats() {
-    use std::io::Write as _;
-    let dir = std::env::temp_dir();
-    let f1 = dir.join("xort_ms1.txt");
-    let f2 = dir.join("xort_ms2.txt");
-    std::fs::File::create(&f1)
-        .unwrap()
-        .write_all(b"a\nc\n")
-        .unwrap();
-    std::fs::File::create(&f2)
-        .unwrap()
-        .write_all(b"b\nd\n")
-        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let f1 = dir.path().join("a.txt");
+    let f2 = dir.path().join("b.txt");
+    std::fs::write(&f1, b"a\nc\n").unwrap();
+    std::fs::write(&f2, b"b\nd\n").unwrap();
     let (out, err, code) = xort_stderr(
-        &["-m", "--stats", f1.to_str().unwrap(), f2.to_str().unwrap()],
+        &[
+            "-m",
+            "--stats",
+            &f1.to_string_lossy(),
+            &f2.to_string_lossy(),
+        ],
         b"",
     );
     assert_eq!(code, 0);
     assert_eq!(out, b"a\nb\nc\nd\n");
     let err = String::from_utf8(err).unwrap();
     assert!(err.contains("4 in, 4 out"), "merge stats: {err}");
-    let _ = std::fs::remove_file(f1);
-    let _ = std::fs::remove_file(f2);
 }
 
 #[test]
@@ -750,15 +746,14 @@ fn count_with_stats() {
 
 #[test]
 fn count_to_output_file() {
-    let dir = std::env::temp_dir();
-    let out = dir.join("xort_count_out.txt");
-    let (_, code) = xort(&["--count", "-o", out.to_str().unwrap()], b"b\na\nb\n");
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("counts.txt");
+    let (_, code) = xort(&["--count", "-o", &out.to_string_lossy()], b"b\na\nb\n");
     assert_eq!(code, 0);
     assert_eq!(
         std::fs::read_to_string(&out).unwrap(),
         "      1 a\n      2 b\n"
     );
-    let _ = std::fs::remove_file(out);
 }
 
 // --- coverage: rich --check diagnostics (diag.rs) ---------------------------
@@ -804,12 +799,11 @@ fn csv_top_and_stats() {
 
 #[test]
 fn csv_to_output_file() {
-    let dir = std::env::temp_dir();
-    let out = dir.join("xort_csv_out.csv");
-    let (_, code) = xort(&["--csv", "-o", out.to_str().unwrap()], b"b,2\na,1\n");
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.csv");
+    let (_, code) = xort(&["--csv", "-o", &out.to_string_lossy()], b"b,2\na,1\n");
     assert_eq!(code, 0);
     assert_eq!(std::fs::read_to_string(&out).unwrap(), "a,1\nb,2\n");
-    let _ = std::fs::remove_file(out);
 }
 
 #[test]
@@ -827,8 +821,8 @@ fn json_mixed_scalar_types_order() {
 
 #[test]
 fn json_top_stats_and_output_file() {
-    let dir = std::env::temp_dir();
-    let out = dir.join("xort_json_out.json");
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.json");
     let (_, err, code) = xort_stderr(
         &[
             "--json",
@@ -838,7 +832,7 @@ fn json_top_stats_and_output_file() {
             "2",
             "--stats",
             "-o",
-            out.to_str().unwrap(),
+            &out.to_string_lossy(),
         ],
         b"[{\"v\":3},{\"v\":1},{\"v\":2}]",
     );
@@ -854,7 +848,6 @@ fn json_top_stats_and_output_file() {
     assert_eq!(vs, vec![1, 2]);
     let err = String::from_utf8(err).unwrap();
     assert!(err.contains("3 in, 2 out"), "json stats: {err}");
-    let _ = std::fs::remove_file(out);
 }
 
 #[test]

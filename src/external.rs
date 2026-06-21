@@ -368,9 +368,10 @@ mod tests {
         // A bare `b`/`B` suffix means bytes (multiplier 1).
         assert_eq!(parse_size("42b").unwrap(), 42);
         assert_eq!(parse_size("7B").unwrap(), 7);
-        // The large suffixes T and P.
-        assert_eq!(parse_size("1T").unwrap(), 1usize << 40);
-        assert_eq!(parse_size("1P").unwrap(), 1usize << 50);
+        // The large suffixes T and P. Compute in u64 (not usize) so the shift
+        // does not overflow at compile time on 32-bit targets.
+        assert_eq!(parse_size("1T").unwrap(), (1u64 << 40) as usize);
+        assert_eq!(parse_size("1P").unwrap(), (1u64 << 50) as usize);
         // Case-insensitive units and surrounding whitespace.
         assert_eq!(parse_size("3k").unwrap(), 3 * 1024);
         assert_eq!(parse_size("  8m  ").unwrap(), 8 * 1024 * 1024);
