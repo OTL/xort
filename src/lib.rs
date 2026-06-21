@@ -9,6 +9,7 @@ pub mod compare;
 pub mod config;
 pub mod engine;
 pub mod external;
+pub mod format;
 pub mod input;
 pub mod key;
 

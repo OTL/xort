@@ -37,6 +37,11 @@ pub fn run(cfg: &Config) -> io::Result<Outcome> {
     let start = Instant::now();
     let terminator = cfg.terminator();
 
+    // Structured formats (CSV/TSV/JSON/JSONL) have their own path.
+    if cfg.format != crate::config::Format::Text {
+        return crate::format::run_structured(cfg, start);
+    }
+
     // External merge sort: gated behind -S, and only for the plain/unique sort
     // (not --top/--count/--header/--merge, which use the in-memory paths).
     if let Some(size) = &cfg.buffer_size {

@@ -252,3 +252,61 @@ fn count_with_top_keeps_first_n_groups() {
         "      2 a\n      3 b\n"
     );
 }
+
+// --- M4: structured formats (CSV / TSV / JSON / JSONL) ----------------------
+
+#[test]
+fn csv_sort_by_column_name_numeric() {
+    let out = run(
+        &["--csv", "--header", "-k", "age", "-n"],
+        "name,age\nbob,40\nalice,25\ncarol,30\n",
+    );
+    assert_eq!(out, "name,age\nalice,25\ncarol,30\nbob,40\n");
+}
+
+#[test]
+fn csv_quoted_field_not_mangled() {
+    // The quoted comma must not split the row; sort by age (col 2) numeric.
+    let out = run(
+        &["--csv", "--header", "-k2n"],
+        "name,age\n\"Smith, John\",30\nAlice,25\n",
+    );
+    assert_eq!(out, "name,age\nAlice,25\n\"Smith, John\",30\n");
+}
+
+#[test]
+fn tsv_sort_by_column() {
+    assert_eq!(
+        run(&["--tsv", "-k2n"], "a\t3\nb\t1\nc\t2\n"),
+        "b\t1\nc\t2\na\t3\n"
+    );
+}
+
+#[test]
+fn jsonl_sort_by_field_preserves_key_order() {
+    let out = run(
+        &["--jsonl", "-k", ".age"],
+        "{\"name\":\"bob\",\"age\":40}\n{\"name\":\"alice\",\"age\":25}\n",
+    );
+    assert_eq!(
+        out,
+        "{\"name\":\"alice\",\"age\":25}\n{\"name\":\"bob\",\"age\":40}\n"
+    );
+}
+
+#[test]
+fn json_array_sorted_by_field() {
+    let out = run(
+        &["--json", "-k", "age"],
+        "[{\"age\":5},{\"age\":50},{\"age\":9}]",
+    );
+    // numeric ordering (not lexical): 5, 9, 50
+    let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let ages: Vec<i64> = parsed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["age"].as_i64().unwrap())
+        .collect();
+    assert_eq!(ages, vec![5, 9, 50]);
+}

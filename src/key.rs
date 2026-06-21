@@ -67,7 +67,7 @@ pub struct GlobalOrder {
     pub reverse: bool,
 }
 
-fn kind_from_opts(opts: &str) -> Kind {
+pub fn kind_from_opts(opts: &str) -> Kind {
     if opts.contains('n') {
         Kind::Numeric
     } else if opts.contains('g') {
