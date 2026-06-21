@@ -685,3 +685,181 @@ fn invalid_key_dangling_dot_errors() {
     let (_, code) = xort(&["-k1."], b"b\na\n");
     assert_eq!(code, 2, "-k with a '.' and no char position should exit 2");
 }
+
+// --- coverage: engine dispatch branches ------------------------------------
+
+#[test]
+fn parallel_flag_sets_thread_pool() {
+    // --parallel builds the rayon global pool; output must still be correct.
+    assert_eq!(run(&["-n", "--parallel", "2"], "3\n1\n2\n"), "1\n2\n3\n");
+}
+
+#[test]
+fn plain_top_without_type() {
+    // No -n/-k: the byte_order fused select_nth fast path (n < len).
+    assert_eq!(
+        run(&["--top", "2"], "delta\nalpha\ncharlie\nbravo\n"),
+        "alpha\nbravo\n"
+    );
+}
+
+#[test]
+fn top_zero_emits_nothing() {
+    // --top 0 returns an empty result across every order path.
+    assert_eq!(run(&["--top", "0"], "b\na\n"), ""); // byte path
+    assert_eq!(run(&["-n", "--top", "0"], "2\n1\n"), ""); // numeric path
+    assert_eq!(run(&["-k1,1", "--top", "0"], "b x\na y\n"), ""); // single-key path
+    assert_eq!(run(&["-k1,1", "-k2,2", "--top", "0"], "b x\na y\n"), ""); // multi-key path
+}
+
+#[test]
+fn merge_with_stats() {
+    use std::io::Write as _;
+    let dir = std::env::temp_dir();
+    let f1 = dir.join("xort_ms1.txt");
+    let f2 = dir.join("xort_ms2.txt");
+    std::fs::File::create(&f1)
+        .unwrap()
+        .write_all(b"a\nc\n")
+        .unwrap();
+    std::fs::File::create(&f2)
+        .unwrap()
+        .write_all(b"b\nd\n")
+        .unwrap();
+    let (out, err, code) = xort_stderr(
+        &["-m", "--stats", f1.to_str().unwrap(), f2.to_str().unwrap()],
+        b"",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(out, b"a\nb\nc\nd\n");
+    let err = String::from_utf8(err).unwrap();
+    assert!(err.contains("4 in, 4 out"), "merge stats: {err}");
+    let _ = std::fs::remove_file(f1);
+    let _ = std::fs::remove_file(f2);
+}
+
+#[test]
+fn count_with_stats() {
+    let (out, err, code) = xort_stderr(&["--count", "--stats"], b"b\na\nb\nb\n");
+    assert_eq!(code, 0);
+    assert_eq!(out, b"      1 a\n      3 b\n");
+    let err = String::from_utf8(err).unwrap();
+    // 4 lines in, 2 groups out, 2 collapsed.
+    assert!(err.contains("4 in, 2 out"), "count stats: {err}");
+}
+
+#[test]
+fn count_to_output_file() {
+    let dir = std::env::temp_dir();
+    let out = dir.join("xort_count_out.txt");
+    let (_, code) = xort(&["--count", "-o", out.to_str().unwrap()], b"b\na\nb\n");
+    assert_eq!(code, 0);
+    assert_eq!(
+        std::fs::read_to_string(&out).unwrap(),
+        "      1 a\n      2 b\n"
+    );
+    let _ = std::fs::remove_file(out);
+}
+
+// --- coverage: rich --check diagnostics (diag.rs) ---------------------------
+
+#[test]
+fn check_failure_color_always() {
+    // A forced-color check failure exercises the ANSI-highlighted report branch.
+    let (out, err, code) = xort_stderr(&["-c", "--color=always"], b"b\na\n");
+    assert_eq!(code, 1);
+    assert!(out.is_empty());
+    let err = String::from_utf8(err).unwrap();
+    assert!(err.contains("not in sorted order"), "stderr: {err}");
+    assert!(err.contains('\x1b'), "forced color should emit ANSI: {err}");
+}
+
+#[test]
+fn check_failure_color_never_is_plain() {
+    let (_, err, code) = xort_stderr(&["-c", "--color=never"], b"b\na\n");
+    assert_eq!(code, 1);
+    let err = String::from_utf8(err).unwrap();
+    assert!(err.contains("not in sorted order"), "stderr: {err}");
+    assert!(!err.contains('\x1b'), "color=never must be plain: {err}");
+}
+
+// --- coverage: structured-format engine branches ---------------------------
+
+#[test]
+fn csv_reverse_and_last_resort() {
+    // -k1r reverses the key (cmp_records reverse arm); within an equal key the
+    // non-suppressed last-resort compares the whole record.
+    let out = run(&["--csv", "-k1r"], "a,2\nb,1\na,1\n");
+    assert_eq!(out, "b,1\na,1\na,2\n");
+}
+
+#[test]
+fn csv_top_and_stats() {
+    let (out, err, code) = xort_stderr(&["--csv", "--top", "1", "--stats"], b"c,3\na,1\nb,2\n");
+    assert_eq!(code, 0);
+    assert_eq!(out, b"a,1\n");
+    let err = String::from_utf8(err).unwrap();
+    assert!(err.contains("3 in, 1 out"), "csv stats: {err}");
+}
+
+#[test]
+fn csv_to_output_file() {
+    let dir = std::env::temp_dir();
+    let out = dir.join("xort_csv_out.csv");
+    let (_, code) = xort(&["--csv", "-o", out.to_str().unwrap()], b"b,2\na,1\n");
+    assert_eq!(code, 0);
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "a,1\nb,2\n");
+    let _ = std::fs::remove_file(out);
+}
+
+#[test]
+fn json_mixed_scalar_types_order() {
+    // Type-ranked ordering: Null < Bool < Number < String.
+    let out = run(
+        &["--jsonl", "-k", ".v"],
+        "{\"v\":\"s\"}\n{\"v\":2}\n{\"v\":true}\n{\"v\":null}\n",
+    );
+    assert_eq!(
+        out,
+        "{\"v\":null}\n{\"v\":true}\n{\"v\":2}\n{\"v\":\"s\"}\n"
+    );
+}
+
+#[test]
+fn json_top_stats_and_output_file() {
+    let dir = std::env::temp_dir();
+    let out = dir.join("xort_json_out.json");
+    let (_, err, code) = xort_stderr(
+        &[
+            "--json",
+            "-k",
+            "v",
+            "--top",
+            "2",
+            "--stats",
+            "-o",
+            out.to_str().unwrap(),
+        ],
+        b"[{\"v\":3},{\"v\":1},{\"v\":2}]",
+    );
+    assert_eq!(code, 0);
+    let written = std::fs::read_to_string(&out).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&written).unwrap();
+    let vs: Vec<i64> = parsed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["v"].as_i64().unwrap())
+        .collect();
+    assert_eq!(vs, vec![1, 2]);
+    let err = String::from_utf8(err).unwrap();
+    assert!(err.contains("3 in, 2 out"), "json stats: {err}");
+    let _ = std::fs::remove_file(out);
+}
+
+#[test]
+fn json_non_array_input_errors() {
+    // --json (array mode) given a bare object must exit 2.
+    let (_, code) = xort(&["--json", "-k", "v"], b"{\"v\":1}");
+    assert_eq!(code, 2, "non-array --json input should exit 2");
+}

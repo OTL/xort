@@ -510,5 +510,98 @@ mod tests {
         assert_eq!(compare_kind(b"JAN", b"FEB", Kind::Month, false), Less);
         assert_eq!(compare_kind(b"abc", b"ABC", Kind::Bytes, true), Equal);
         assert_eq!(compare_kind(b"abc", b"abd", Kind::Bytes, false), Less);
+        assert_eq!(compare_kind(b"1e3", b"50", Kind::General, false), Greater);
+    }
+
+    #[test]
+    fn numeric_zero_vs_signed() {
+        // A signed non-zero against an exact zero exercises the zero/non-zero
+        // branches of `NumericKey::cmp` in both directions.
+        assert_eq!(n("-5", "0"), Less); // negative < zero
+        assert_eq!(n("5", "0"), Greater); // positive > zero
+        assert_eq!(n("0", "-5"), Greater); // zero > negative
+        assert_eq!(n("0", "5"), Less); // zero < positive
+    }
+
+    #[test]
+    fn numeric_key_partial_ord_and_eq() {
+        // Exercise the PartialOrd/PartialEq impls (operators, not `Ord::cmp`).
+        let a = NumericKey::parse(b"2");
+        let b = NumericKey::parse(b"10");
+        assert!(a < b);
+        assert!(b > a);
+        assert_eq!(NumericKey::parse(b"-0"), NumericKey::parse(b"0"));
+        assert_eq!(NumericKey::parse(b"1.50"), NumericKey::parse(b"1.5"));
+        assert_ne!(NumericKey::parse(b"1"), NumericKey::parse(b"2"));
+    }
+
+    #[test]
+    fn general_negative_exponent_and_unparseable() {
+        // Negative exponent sign in `parse_f64`.
+        assert_eq!(general_cmp(b"1e-1", b"1"), Less); // 0.1 < 1
+        assert_eq!(general_cmp(b"1.0e+1", b"5"), Greater); // 10 > 5
+                                                           // A number is always greater than an unparseable value (the Some/None arm).
+        assert_eq!(general_cmp(b"5", b"x"), Greater);
+    }
+
+    #[test]
+    fn human_all_suffixes() {
+        // Walk the full SI/IEC ladder, including the high suffixes P/E/Z/Y.
+        assert_eq!(human_cmp(b"1P", b"1T"), Greater);
+        assert_eq!(human_cmp(b"1E", b"1P"), Greater);
+        assert_eq!(human_cmp(b"1Z", b"1E"), Greater);
+        assert_eq!(human_cmp(b"1Y", b"1Z"), Greater);
+        assert_eq!(human_cmp(b"1k", b"1K"), Equal); // lowercase k == K
+                                                    // Negative magnitude: the sign skip in `human_value`.
+        assert_eq!(human_cmp(b"-1K", b"0"), Less);
+    }
+
+    #[test]
+    fn months_full_calendar_and_short() {
+        let order = [
+            &b"JAN"[..],
+            b"FEB",
+            b"MAR",
+            b"APR",
+            b"MAY",
+            b"JUN",
+            b"JUL",
+            b"AUG",
+            b"SEP",
+            b"OCT",
+            b"NOV",
+            b"DEC",
+        ];
+        for w in order.windows(2) {
+            assert_eq!(month_cmp(w[0], w[1]), Less, "{:?} < {:?}", w[0], w[1]);
+        }
+        // Fewer than three letters is unknown (sorts as 0).
+        assert_eq!(month_cmp(b"Ja", b"JAN"), Less);
+        assert_eq!(month_cmp(b"", b"JAN"), Less);
+    }
+
+    #[test]
+    fn version_char_mismatch() {
+        // A non-digit character mismatch hits the byte-compare arm of version_cmp.
+        assert_eq!(version_cmp(b"a", b"b"), Less);
+        assert_eq!(version_cmp(b"alpha", b"beta"), Less);
+    }
+
+    #[test]
+    fn compare_key_numeric() {
+        // `compare_key` with the numeric option (used for -u/-c equality).
+        let o = KeyOpts {
+            numeric: true,
+            ..Default::default()
+        };
+        assert_eq!(compare_key(b"2", b"10", &o), Less);
+        assert_eq!(compare_key(b"10", b"10", &o), Equal);
+        // ignore_blanks combined with numeric.
+        let ob = KeyOpts {
+            numeric: true,
+            ignore_blanks: true,
+            ..Default::default()
+        };
+        assert_eq!(compare_key(b"  5", b"5", &ob), Equal);
     }
 }
