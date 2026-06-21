@@ -1,5 +1,11 @@
 # xort
 
+[![CI](https://github.com/otl/xort/actions/workflows/ci.yml/badge.svg)](https://github.com/otl/xort/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/otl/xort/branch/main/graph/badge.svg)](https://codecov.io/gh/otl/xort)
+[![crates.io](https://img.shields.io/crates/v/xort.svg)](https://crates.io/crates/xort)
+[![docs.rs](https://img.shields.io/docsrs/xort)](https://docs.rs/xort)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE-MIT)
+
 **A fast, modern, parallel drop-in replacement for the Unix `sort` command.**
 
 `xort` aims to be to `sort` what [ripgrep] is to `grep` and [fd] is to `find`:
