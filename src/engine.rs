@@ -12,14 +12,21 @@ use std::time::Instant;
 
 /// Outcome of a run: the process exit code plus optional statistics.
 pub struct Outcome {
+    /// Process exit code (0 success, 1 `-c` disorder, 2 error).
     pub exit_code: i32,
+    /// Summary statistics, present when `--stats` was requested.
     pub stats: Option<Stats>,
 }
 
+/// Summary statistics for a run, emitted to stderr under `--stats`.
 pub struct Stats {
+    /// Number of input lines (records) read.
     pub lines_in: usize,
+    /// Number of lines (records/groups) written.
     pub lines_out: usize,
+    /// Lines removed by `-u`/grouping.
     pub duplicates_removed: usize,
+    /// Wall-clock time elapsed.
     pub elapsed_secs: f64,
 }
 

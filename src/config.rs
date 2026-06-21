@@ -4,6 +4,7 @@ use crate::compare::KeyOpts;
 use crate::key::{self, GlobalOrder, KeyDef, Kind, Sorter};
 use std::path::PathBuf;
 
+/// The fully-resolved description of a sort job, produced from [`crate::cli::Cli`].
 #[derive(Clone, Debug)]
 pub struct Config {
     /// Input files; empty (or `-`) means stdin.
@@ -63,19 +64,28 @@ pub struct Config {
 /// Structured-input format selection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Format {
+    /// Plain text lines (default).
     #[default]
     Text,
+    /// Comma-separated values (RFC 4180).
     Csv,
+    /// Tab-separated values.
     Tsv,
+    /// A single JSON array of values.
     Json,
+    /// JSON Lines / NDJSON (one value per line).
     Jsonl,
 }
 
+/// When to colorize the sort key in output.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ColorChoice {
+    /// Colorize only when writing to a terminal (honoring `NO_COLOR`).
     #[default]
     Auto,
+    /// Always colorize.
     Always,
+    /// Never colorize.
     Never,
 }
 

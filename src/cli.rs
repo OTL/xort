@@ -16,6 +16,8 @@ use std::path::PathBuf;
     disable_version_flag = true,
     group = ArgGroup::new("format").args(["csv", "tsv", "json", "jsonl"]),
 )]
+/// Parsed command-line arguments, convertible into a [`Config`] via
+/// [`Cli::into_config`].
 pub struct Cli {
     /// Input files ("-" or none means standard input).
     #[arg(value_name = "FILE")]
@@ -73,7 +75,7 @@ pub struct Cli {
     #[arg(short = 'm', long = "merge")]
     pub merge: bool,
 
-    /// Sort via a key; KEYDEF is F[.C][OPTS][,F[.C][OPTS]].
+    /// Sort via a key; KEYDEF is `F[.C][OPTS][,F[.C][OPTS]]`.
     #[arg(short = 'k', long = "key", value_name = "KEYDEF", action = ArgAction::Append)]
     pub keys: Vec<String>,
 
@@ -150,14 +152,22 @@ pub struct Cli {
     pub version: Option<bool>,
 }
 
+/// The `--color` argument value.
 #[derive(ValueEnum, Clone, Copy, Debug)]
 pub enum ColorArg {
+    /// Colorize only when writing to a terminal (honoring `NO_COLOR`).
     Auto,
+    /// Always colorize.
     Always,
+    /// Never colorize.
     Never,
 }
 
 impl Cli {
+    /// Validate the parsed arguments and resolve them into a [`Config`].
+    ///
+    /// Returns an error message for invalid combinations (e.g. a
+    /// multi-character `-t`, or `-z` with `--csv`).
     pub fn into_config(self) -> Result<Config, String> {
         let tab = match &self.field_separator {
             None => None,

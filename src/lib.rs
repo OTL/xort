@@ -1,8 +1,11 @@
+#![warn(missing_docs)]
 //! xort — a fast, modern, parallel replacement for the Unix `sort` command.
 //!
 //! Library surface so the binary stays thin and the engine is unit/integration
-//! testable. The module layout mirrors the project plan; milestone 1 implements
-//! a correct, parallel plain sort with the global key and the core flags.
+//! testable. The module layout mirrors the project plan: text sorting lives in
+//! [`engine`], multi-key/typed comparison in [`key`] and [`compare`], structured
+//! formats (CSV/JSON) in [`format`](mod@format), the >RAM path in [`external`], and output
+//! polish (color, rich `--check`) in [`diag`].
 
 pub mod cli;
 pub mod compare;

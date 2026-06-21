@@ -11,12 +11,9 @@ fn xort(args: &[&str], stdin: &[u8]) -> (Vec<u8>, i32) {
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn xort");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(stdin)
-        .expect("write stdin");
+    // Ignore broken-pipe errors: commands that fail during argument parsing
+    // (e.g. an invalid -t) exit before reading stdin.
+    let _ = child.stdin.take().unwrap().write_all(stdin);
     let out = child.wait_with_output().expect("wait");
     (out.stdout, out.status.code().unwrap_or(-1))
 }
@@ -346,4 +343,165 @@ fn man_page_generates() {
     let (out, code) = xort(&["--man"], b"");
     assert_eq!(code, 0);
     assert!(String::from_utf8_lossy(&out).contains(".TH xort"));
+}
+
+// --- coverage: error paths, output file, stats, more format/engine branches -
+
+#[test]
+fn csv_unique_and_whole_record() {
+    // no -k => whole-record key; -u dedups identical rows
+    assert_eq!(run(&["--csv", "-u"], "a,1\nb,2\na,1\n"), "a,1\nb,2\n");
+}
+
+#[test]
+fn csv_unknown_column_name_errors() {
+    let (_, code) = xort(&["--csv", "--header", "-k", "nope"], b"name,age\nx,1\n");
+    assert_eq!(code, 2, "unknown column name should exit 2");
+}
+
+#[test]
+fn csv_name_without_header_errors() {
+    let (_, code) = xort(&["--csv", "-k", "age"], b"name,age\nx,1\n");
+    assert_eq!(code, 2);
+}
+
+#[test]
+fn json_reverse_and_unique() {
+    let out = run(
+        &["--jsonl", "-k", ".v", "-r"],
+        "{\"v\":1}\n{\"v\":3}\n{\"v\":2}\n",
+    );
+    assert_eq!(out, "{\"v\":3}\n{\"v\":2}\n{\"v\":1}\n");
+    let uniq = run(
+        &["--jsonl", "-k", ".v", "-u"],
+        "{\"v\":1}\n{\"v\":1}\n{\"v\":2}\n",
+    );
+    assert_eq!(uniq, "{\"v\":1}\n{\"v\":2}\n");
+}
+
+#[test]
+fn invalid_json_errors() {
+    let (_, code) = xort(&["--json", "-k", "x"], b"{not valid json");
+    assert_eq!(code, 2);
+}
+
+#[test]
+fn multichar_tab_errors() {
+    let (_, code) = xort(&["-t", "ab"], b"x\n");
+    assert_eq!(code, 2);
+}
+
+#[test]
+fn zero_terminated_with_csv_errors() {
+    let (_, code) = xort(&["--csv", "-z"], b"a,b\n");
+    assert_eq!(code, 2);
+}
+
+#[test]
+fn output_to_file_and_stats() {
+    let dir = std::env::temp_dir();
+    let out = dir.join("xort_out.txt");
+    let (_, code) = xort(
+        &["-n", "--stats", "-o", out.to_str().unwrap()],
+        b"3\n1\n2\n",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "1\n2\n3\n");
+    let _ = std::fs::remove_file(out);
+}
+
+#[test]
+fn merge_unique() {
+    use std::io::Write as _;
+    let dir = std::env::temp_dir();
+    let f1 = dir.join("xort_mu1.txt");
+    let f2 = dir.join("xort_mu2.txt");
+    std::fs::File::create(&f1)
+        .unwrap()
+        .write_all(b"a\nb\n")
+        .unwrap();
+    std::fs::File::create(&f2)
+        .unwrap()
+        .write_all(b"b\nc\n")
+        .unwrap();
+    let out = run(
+        &["-m", "-u", f1.to_str().unwrap(), f2.to_str().unwrap()],
+        "",
+    );
+    assert_eq!(out, "a\nb\nc\n");
+    let _ = std::fs::remove_file(f1);
+    let _ = std::fs::remove_file(f2);
+}
+
+#[test]
+fn count_with_header() {
+    assert_eq!(
+        run(&["--count", "--header"], "label\nb\na\nb\n"),
+        "label\n      1 a\n      2 b\n"
+    );
+}
+
+#[test]
+fn external_unique_with_tempdir() {
+    use std::io::Write as _;
+    let dir = std::env::temp_dir();
+    let f = dir.join("xort_extu.txt");
+    let mut s = String::new();
+    for i in 0..5000 {
+        s.push_str(&((i % 500).to_string()));
+        s.push('\n');
+    }
+    std::fs::File::create(&f)
+        .unwrap()
+        .write_all(s.as_bytes())
+        .unwrap();
+    let out = run(
+        &[
+            "-n",
+            "-u",
+            "-S",
+            "4K",
+            "-T",
+            dir.to_str().unwrap(),
+            f.to_str().unwrap(),
+        ],
+        "",
+    );
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 500);
+    assert_eq!(lines[0], "0");
+    assert_eq!(lines[499], "499");
+    let _ = std::fs::remove_file(f);
+}
+
+#[test]
+fn reverse_general_human_month_via_keys() {
+    // exercise the general_order path with typed keys + reverse
+    assert_eq!(run(&["-hr"], "1K\n2K\n500\n"), "2K\n1K\n500\n");
+    assert_eq!(run(&["-Mr"], "Jan\nMar\nFeb\n"), "Mar\nFeb\nJan\n");
+}
+
+// --- coverage: stdin variants and IO error paths ---------------------------
+
+#[test]
+fn stdin_dash_reads_stdin() {
+    assert_eq!(run(&["-"], "b\na\nc\n"), "a\nb\nc\n");
+}
+
+#[test]
+fn merge_from_stdin_single_source() {
+    // -m with no files reads stdin as one already-sorted source.
+    assert_eq!(run(&["-m"], "a\nb\nc\n"), "a\nb\nc\n");
+}
+
+#[test]
+fn missing_file_errors() {
+    let (_, code) = xort(&["/no/such/xort/file"], b"");
+    assert_eq!(code, 2);
+}
+
+#[test]
+fn external_from_stdin() {
+    // -S with stdin exercises the streaming LineSource over stdin.
+    assert_eq!(run(&["-n", "-S", "16"], "30\n10\n20\n"), "10\n20\n30\n");
 }

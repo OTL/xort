@@ -9,12 +9,18 @@ use std::cmp::Ordering;
 /// The ordering discipline applied to a key's extracted bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Kind {
+    /// Raw byte comparison (the default).
     #[default]
     Bytes,
+    /// `-n`: leading numeric value (arbitrary-precision integer part).
     Numeric,
+    /// `-g`: general float value (`f64`, incl. exponents).
     General,
+    /// `-h`: human-readable size (1024-based suffixes).
     Human,
+    /// `-V`: version/natural ordering.
     Version,
+    /// `-M`: month name ordering.
     Month,
 }
 
@@ -29,10 +35,15 @@ pub struct KeyDef {
     pub end_field: Option<usize>,
     /// End char within the end field (1-based, inclusive); 0 means "whole field".
     pub end_char: usize,
+    /// The ordering discipline for this key.
     pub kind: Kind,
+    /// Fold case (`f`).
     pub fold: bool,
+    /// Skip leading blanks of the start field (`b`).
     pub skip_sblanks: bool,
+    /// Skip leading blanks of the end field (`b` after the comma).
     pub skip_eblanks: bool,
+    /// Reverse this key's ordering (`r`).
     pub reverse: bool,
 }
 
@@ -61,12 +72,17 @@ fn is_blank(b: u8) -> bool {
 /// Global ordering options (set by flags before/without `-k`).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct GlobalOrder {
+    /// Ordering discipline from `-n/-g/-h/-V/-M`.
     pub kind: Kind,
+    /// Global `-f`.
     pub fold: bool,
+    /// Global `-b`.
     pub ignore_blanks: bool,
+    /// Global `-r`.
     pub reverse: bool,
 }
 
+/// Map the type letters in a `-k` option string (`nghVM`) to a [`Kind`].
 pub fn kind_from_opts(opts: &str) -> Kind {
     if opts.contains('n') {
         Kind::Numeric
@@ -260,8 +276,11 @@ pub fn extract_range(line: &[u8], key: &KeyDef, tab: Option<u8>) -> (usize, usiz
 /// options that govern the last-resort comparison.
 #[derive(Clone, Debug)]
 pub struct Sorter {
+    /// The ordered list of keys (a single whole-line key when no `-k` is given).
     pub keys: Vec<KeyDef>,
+    /// Field separator (`-t`); `None` means whitespace-transition fields.
     pub tab: Option<u8>,
+    /// Global `-r`, applied to the whole-line last-resort comparison.
     pub global_reverse: bool,
     /// Suppress the whole-line last-resort comparison (`-s` or `-u`).
     pub suppress_last_resort: bool,

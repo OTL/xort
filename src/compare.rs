@@ -93,6 +93,7 @@ pub struct NumericKey<'a> {
 }
 
 impl<'a> NumericKey<'a> {
+    /// Parse the leading number of `s` once, borrowing its digit slices.
     #[inline]
     pub fn parse(s: &'a [u8]) -> Self {
         let (neg, int, frac) = split_number(s);
@@ -462,5 +463,52 @@ mod tests {
         assert_eq!(full_compare(b"Apple", b"apple", &o, false, false), Less);
         // stable: tie preserved.
         assert_eq!(full_compare(b"Apple", b"apple", &o, false, true), Equal);
+    }
+
+    #[test]
+    fn general_floats() {
+        assert_eq!(general_cmp(b"1e3", b"50"), Greater);
+        assert_eq!(general_cmp(b"2.5e1", b"25"), Equal);
+        assert_eq!(general_cmp(b"-1.5", b"-1.4"), Less);
+        // unparseable sorts before any number
+        assert_eq!(general_cmp(b"x", b"0"), Less);
+        assert_eq!(general_cmp(b"x", b"y"), Equal);
+    }
+
+    #[test]
+    fn human_sizes() {
+        assert_eq!(human_cmp(b"1K", b"500"), Greater);
+        assert_eq!(human_cmp(b"1M", b"1024K"), Equal);
+        assert_eq!(human_cmp(b"2G", b"1T"), Less);
+        assert_eq!(human_cmp(b"1.5K", b"1500"), Greater);
+        assert_eq!(human_cmp(b"junk", b"0"), Equal);
+    }
+
+    #[test]
+    fn versions() {
+        assert_eq!(version_cmp(b"v2", b"v10"), Less);
+        assert_eq!(version_cmp(b"1.9", b"1.10"), Less);
+        assert_eq!(version_cmp(b"1.0", b"1.0"), Equal);
+        assert_eq!(version_cmp(b"a1", b"a1b"), Less);
+        assert_eq!(version_cmp(b"file01", b"file1"), Equal); // leading zeros ignored
+    }
+
+    #[test]
+    fn months() {
+        assert_eq!(month_cmp(b"JAN", b"FEB"), Less);
+        assert_eq!(month_cmp(b"dec", b"jan"), Greater);
+        assert_eq!(month_cmp(b"Mar 1", b"March"), Equal); // first 3 letters
+        assert_eq!(month_cmp(b"???", b"JAN"), Less); // unknown < JAN
+    }
+
+    #[test]
+    fn compare_kind_dispatch() {
+        use crate::key::Kind;
+        assert_eq!(compare_kind(b"2", b"10", Kind::Numeric, false), Less);
+        assert_eq!(compare_kind(b"v2", b"v10", Kind::Version, false), Less);
+        assert_eq!(compare_kind(b"1K", b"2K", Kind::Human, false), Less);
+        assert_eq!(compare_kind(b"JAN", b"FEB", Kind::Month, false), Less);
+        assert_eq!(compare_kind(b"abc", b"ABC", Kind::Bytes, true), Equal);
+        assert_eq!(compare_kind(b"abc", b"abd", Kind::Bytes, false), Less);
     }
 }

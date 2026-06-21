@@ -18,6 +18,7 @@ fn invalid(e: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, e)
 }
 
+/// Sort a structured input (CSV/TSV/JSON/JSONL) per `cfg`, writing the result.
 pub fn run_structured(cfg: &Config, start: Instant) -> io::Result<Outcome> {
     match cfg.format {
         Format::Csv | Format::Tsv => run_csv(cfg, start),
@@ -343,4 +344,33 @@ fn run_json(cfg: &Config, start: Instant, lines_mode: bool) -> io::Result<Outcom
 
 fn json_err(e: serde_json::Error) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, e)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cmp::Ordering::*;
+
+    #[test]
+    fn jkey_type_ordering() {
+        // Null < Bool < Number < String
+        assert_eq!(JKey::Null.cmp(&JKey::Bool(false)), Less);
+        assert_eq!(JKey::Bool(true).cmp(&JKey::Num(0.0)), Less);
+        assert_eq!(JKey::Num(5.0).cmp(&JKey::Str("a".into())), Less);
+        assert_eq!(JKey::Num(2.0).cmp(&JKey::Num(10.0)), Less);
+        assert_eq!(JKey::Str("a".into()).cmp(&JKey::Str("b".into())), Less);
+        assert_eq!(JKey::Bool(false).cmp(&JKey::Bool(true)), Less);
+    }
+
+    #[test]
+    fn json_key_path_navigation() {
+        let v: serde_json::Value =
+            serde_json::from_str(r#"{"user":{"age":30,"name":"x"}}"#).unwrap();
+        assert_eq!(
+            json_key(&v, &["user".into(), "age".into()]).cmp(&JKey::Num(30.0)),
+            Equal
+        );
+        // missing path yields Null
+        assert_eq!(json_key(&v, &["nope".into()]).cmp(&JKey::Null), Equal);
+    }
 }
