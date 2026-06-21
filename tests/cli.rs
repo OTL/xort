@@ -551,3 +551,44 @@ fn stats_no_chunks_for_in_memory() {
     let err = String::from_utf8(err).unwrap();
     assert!(!err.contains("spilled chunk"), "stderr was: {err}");
 }
+
+// --- regressions: external (-S) correctness (code-review findings) ----------
+
+#[test]
+fn external_unique_single_chunk_dedups() {
+    // A large -S keeps everything in one chunk; the single-chunk fast path
+    // must still apply -u (regression: it bypassed merge_runs' dedup).
+    assert_eq!(
+        run(&["-n", "-u", "-S", "1G"], "3\n1\n2\n1\n3\n2\n"),
+        "1\n2\n3\n"
+    );
+}
+
+#[test]
+fn external_unique_stats_counts() {
+    let (_, err, code) = xort_stderr(&["-n", "-u", "-S", "1G", "--stats"], b"3\n1\n2\n1\n3\n2\n");
+    assert_eq!(code, 0);
+    let err = String::from_utf8(err).unwrap();
+    assert!(
+        err.contains("6 in, 3 out, 3 duplicate"),
+        "external -u stats should reflect dedup; got: {err}"
+    );
+}
+
+#[test]
+fn external_multifile_missing_trailing_newline() {
+    // A file lacking a trailing newline must not glue onto the next file's
+    // first line under -S (regression: Read::chain concatenated them).
+    let dir = std::env::temp_dir();
+    let f1 = dir.join("xort_extmf1.txt");
+    let f2 = dir.join("xort_extmf2.txt");
+    std::fs::write(&f1, b"banana\napple").unwrap(); // no trailing newline
+    std::fs::write(&f2, b"cherry\n").unwrap();
+    let out = run(
+        &["-S", "1G", f1.to_str().unwrap(), f2.to_str().unwrap()],
+        "",
+    );
+    assert_eq!(out, "apple\nbanana\ncherry\n");
+    let _ = std::fs::remove_file(f1);
+    let _ = std::fs::remove_file(f2);
+}

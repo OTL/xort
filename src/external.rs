@@ -42,27 +42,74 @@ pub fn parse_size(s: &str) -> Result<usize, String> {
 /// Read buffers sized for throughput rather than latency.
 const IO_BUF: usize = 1 << 18; // 256 KiB
 
-/// Concatenate all inputs (files and/or stdin) into one reader.
-fn open_input(cfg: &Config) -> io::Result<Box<dyn Read>> {
+/// A `Read` over all inputs in order that injects a single terminator between
+/// files which do not already end with one — matching `input::read_all`, so the
+/// external path never glues the last line of one file to the next file's first
+/// line.
+struct MultiInput {
+    readers: Vec<Box<dyn Read>>,
+    idx: usize,
+    terminator: u8,
+    last_byte: Option<u8>, // last data byte read from the current file
+    pending_sep: bool,
+}
+
+impl Read for MultiInput {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            if self.pending_sep {
+                self.pending_sep = false;
+                buf[0] = self.terminator;
+                return Ok(1);
+            }
+            if self.idx >= self.readers.len() {
+                return Ok(0);
+            }
+            let n = self.readers[self.idx].read(buf)?;
+            if n == 0 {
+                // Current file ended; if it emitted bytes not ending in the
+                // terminator and another file follows, inject a separator.
+                self.idx += 1;
+                if self.idx < self.readers.len()
+                    && self.last_byte.is_some_and(|b| b != self.terminator)
+                {
+                    self.pending_sep = true;
+                }
+                self.last_byte = None;
+                continue;
+            }
+            self.last_byte = Some(buf[n - 1]);
+            return Ok(n);
+        }
+    }
+}
+
+/// Open all inputs (files and/or stdin) as one separator-inserting reader.
+fn open_input(cfg: &Config, terminator: u8) -> io::Result<MultiInput> {
+    let mut readers: Vec<Box<dyn Read>> = Vec::new();
     if cfg.files.is_empty() {
-        return Ok(Box::new(io::stdin()));
+        readers.push(Box::new(io::stdin()));
+    } else {
+        for p in &cfg.files {
+            if p.as_os_str() == "-" {
+                readers.push(Box::new(io::stdin()));
+            } else {
+                readers.push(Box::new(File::open(p).map_err(|e| {
+                    io::Error::new(e.kind(), format!("{}: {}", p.display(), e))
+                })?));
+            }
+        }
     }
-    let mut chained: Option<Box<dyn Read>> = None;
-    for p in &cfg.files {
-        let r: Box<dyn Read> = if p.as_os_str() == "-" {
-            Box::new(io::stdin())
-        } else {
-            Box::new(
-                File::open(p)
-                    .map_err(|e| io::Error::new(e.kind(), format!("{}: {}", p.display(), e)))?,
-            )
-        };
-        chained = Some(match chained {
-            None => r,
-            Some(prev) => Box::new(prev.chain(r)),
-        });
-    }
-    Ok(chained.unwrap_or_else(|| Box::new(io::empty())))
+    Ok(MultiInput {
+        readers,
+        idx: 0,
+        terminator,
+        last_byte: None,
+        pending_sep: false,
+    })
 }
 
 /// Read the next chunk of *complete* lines into `block`, bounded by `budget`
@@ -100,25 +147,11 @@ fn read_block(
     }
 }
 
-/// Split a buffer of terminated lines into borrowed slices (terminators
-/// stripped). A final unterminated line is included.
-fn split_block(block: &[u8], terminator: u8) -> Vec<&[u8]> {
-    let mut lines = Vec::new();
-    let mut start = 0;
-    for i in memchr::memchr_iter(terminator, block) {
-        lines.push(&block[start..i]);
-        start = i + 1;
-    }
-    if start < block.len() {
-        lines.push(&block[start..]);
-    }
-    lines
-}
-
-/// Run the external sort, writing sorted output. Returns `(lines, chunks)`
-/// where `chunks` is the number of sorted runs (1 means everything fit in a
-/// single chunk and was written directly; > 1 means the input genuinely
-/// spilled to temp files and was k-way merged).
+/// Run the external sort, writing sorted output. Returns `(lines_in, lines_out,
+/// chunks)`: `lines_in` is the number of records read, `lines_out` the number
+/// written (smaller under `-u`), and `chunks` the number of sorted runs (1 means
+/// everything fit in a single chunk and was written directly; > 1 means the
+/// input genuinely spilled to temp files and was k-way merged).
 ///
 /// Each chunk is read as one block of zero-copy line slices and sorted in
 /// parallel (rayon); only when the input exceeds the budget do we spill and
@@ -128,8 +161,8 @@ pub fn run_external(
     sorter: &Sorter,
     budget: usize,
     terminator: u8,
-) -> io::Result<(usize, usize)> {
-    let mut reader = open_input(cfg)?;
+) -> io::Result<(usize, usize, usize)> {
+    let mut reader = open_input(cfg, terminator)?;
     let temp_dir = cfg.temp_dirs.first().cloned();
     let stable = cfg.stable || cfg.unique;
 
@@ -144,11 +177,11 @@ pub fn run_external(
     let mut block: Vec<u8> = Vec::with_capacity(budget.min(1 << 26) + IO_BUF);
 
     loop {
-        let eof = read_block(&mut *reader, budget, terminator, &mut carry, &mut block)?;
+        let eof = read_block(&mut reader, budget, terminator, &mut carry, &mut block)?;
         if block.is_empty() {
             break;
         }
-        let mut lines = split_block(&block, terminator);
+        let mut lines = crate::input::split_lines(&block, terminator);
         total += lines.len();
         if stable {
             lines.par_sort_by(|a, b| sorter.compare(a, b));
@@ -156,12 +189,15 @@ pub fn run_external(
             lines.par_sort_unstable_by(|a, b| sorter.compare(a, b));
         }
 
-        // Single chunk that reached EOF on the first read: write directly,
-        // skipping the temp-file round trip entirely.
+        // Single chunk that reached EOF on the first read: dedup for -u, then
+        // write directly, skipping the temp-file round trip entirely.
         if eof && runs.is_empty() {
+            if cfg.unique {
+                lines.dedup_by(|a, b| sorter.key_equal(a, b));
+            }
             write_lines(&mut out, &lines, terminator)?;
             out.flush()?;
-            return Ok((total, 1));
+            return Ok((total, lines.len(), 1));
         }
 
         runs.push(spill(&lines, terminator, &temp_dir)?);
@@ -171,8 +207,8 @@ pub fn run_external(
     }
 
     let chunks = runs.len();
-    merge_runs(runs, sorter, cfg, terminator, out)?;
-    Ok((total, chunks))
+    let lines_out = merge_runs(runs, sorter, cfg, terminator, out)?;
+    Ok((total, lines_out, chunks))
 }
 
 fn write_lines(w: &mut dyn Write, lines: &[&[u8]], terminator: u8) -> io::Result<()> {
@@ -247,7 +283,7 @@ fn merge_runs(
     cfg: &Config,
     terminator: u8,
     mut out: Box<dyn Write>,
-) -> io::Result<()> {
+) -> io::Result<usize> {
     let mut heap = BinaryHeap::new();
     for tf in &runs {
         let file = tf.reopen()?;
@@ -261,6 +297,7 @@ fn merge_runs(
             heap.push(cur);
         }
     }
+    let mut written = 0usize;
     let mut last: Option<Vec<u8>> = None;
     while let Some(mut cur) = heap.pop() {
         let dup = cfg.unique
@@ -270,8 +307,13 @@ fn merge_runs(
         if !dup {
             out.write_all(&cur.head)?;
             out.write_all(std::slice::from_ref(&terminator))?;
+            written += 1;
             if cfg.unique {
-                last = Some(cur.head.clone());
+                // Reuse one buffer across rows instead of allocating per line.
+                let mut prev = last.take().unwrap_or_default();
+                prev.clear();
+                prev.extend_from_slice(&cur.head);
+                last = Some(prev);
             }
         }
         if cur.advance()? {
@@ -281,7 +323,7 @@ fn merge_runs(
     out.flush()?;
     // `runs` is dropped here, deleting temp files.
     drop(runs);
-    Ok(())
+    Ok(written)
 }
 
 #[cfg(test)]

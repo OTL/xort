@@ -58,11 +58,12 @@ pub fn run(cfg: &Config) -> io::Result<Outcome> {
         if !cfg.merge && !cfg.check && cfg.top.is_none() && !cfg.count && !cfg.header {
             let budget = crate::external::parse_size(size).map_err(invalid)?;
             let sorter = cfg.build_sorter().map_err(invalid)?;
-            let (n, chunks) = crate::external::run_external(cfg, &sorter, budget, terminator)?;
+            let (lines_in, lines_out, chunks) =
+                crate::external::run_external(cfg, &sorter, budget, terminator)?;
             let stats = cfg.stats.then(|| Stats {
-                lines_in: n,
-                lines_out: n,
-                duplicates_removed: 0,
+                lines_in,
+                lines_out,
+                duplicates_removed: lines_in.saturating_sub(lines_out),
                 chunks: Some(chunks),
                 elapsed_secs: start.elapsed().as_secs_f64(),
             });
