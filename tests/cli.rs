@@ -602,3 +602,86 @@ fn external_line_longer_than_buffer() {
     let out = run(&["-S", "100", "-"], &input);
     assert_eq!(out, format!("a\nb\n{big}\n"));
 }
+
+// --- Review-driven regressions ---------------------------------------------
+
+#[test]
+fn external_output_aliasing_input_preserves_data() {
+    // `-S ... -o FILE FILE`: the output must not be truncated before the input
+    // is read, or the file is destroyed instead of sorted.
+    use std::io::Write as _;
+    let dir = std::env::temp_dir();
+    let f = dir.join("xort_alias.txt");
+    std::fs::File::create(&f)
+        .unwrap()
+        .write_all(b"3\n1\n2\n")
+        .unwrap();
+    let path = f.to_str().unwrap();
+    let (_, code) = xort(&["-n", "-S", "1G", "-o", path, path], b"");
+    assert_eq!(code, 0);
+    let got = std::fs::read_to_string(&f).unwrap();
+    let _ = std::fs::remove_file(&f);
+    assert_eq!(got, "1\n2\n3\n");
+}
+
+#[test]
+fn jsonl_unique_without_key_keeps_distinct_records() {
+    // No key => sort by whole value; -u must only drop true duplicates, not
+    // collapse every record into one.
+    let out = run(&["--jsonl", "-u"], "{\"x\":2}\n{\"x\":1}\n{\"x\":2}\n");
+    assert_eq!(out, "{\"x\":1}\n{\"x\":2}\n");
+}
+
+#[test]
+fn top_with_stable_is_stable() {
+    // -s must preserve input order among equal keys even with --top, matching
+    // `sort -f -s | head -n 2`.
+    assert_eq!(
+        run(
+            &["-f", "-s", "--top", "2"],
+            "banana\nBanana\nBANANA\napple\n"
+        ),
+        "apple\nbanana\n"
+    );
+}
+
+#[test]
+fn top_with_stable_key_is_stable() {
+    // Same, routed through the keyed (single-key) path.
+    assert_eq!(
+        run(&["-k1,1", "-s", "--top", "2"], "1 c\n1 b\n1 a\n2 z\n"),
+        "1 c\n1 b\n"
+    );
+}
+
+#[test]
+fn csv_column_index_inherits_global_type() {
+    // `-k2 -n` (no inline options) must inherit the global numeric type.
+    let out = run(&["--csv", "--header", "-k2", "-n"], "n,v\na,10\nb,2\n");
+    assert_eq!(out, "n,v\nb,2\na,10\n");
+}
+
+#[test]
+fn csv_column_range_options_not_dropped() {
+    // `-k2,2n` must apply the `n` option rather than silently discarding it.
+    let out = run(&["--csv", "--header", "-k2,2n"], "n,v\na,10\nb,2\n");
+    assert_eq!(out, "n,v\nb,2\na,10\n");
+}
+
+#[test]
+fn csv_multicolumn_range_errors() {
+    let (_, code) = xort(&["--csv", "--header", "-k1,2"], b"a,b\nx,y\n");
+    assert_eq!(code, 2, "multi-column CSV range should exit 2");
+}
+
+#[test]
+fn invalid_key_option_letter_errors() {
+    let (_, code) = xort(&["-k1x"], b"b\na\n");
+    assert_eq!(code, 2, "unknown -k option letter should exit 2");
+}
+
+#[test]
+fn invalid_key_dangling_dot_errors() {
+    let (_, code) = xort(&["-k1."], b"b\na\n");
+    assert_eq!(code, 2, "-k with a '.' and no char position should exit 2");
+}

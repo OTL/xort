@@ -180,7 +180,10 @@ fn byte_order<'a>(
     let stable = cfg.stable || (cfg.unique && (opts.fold || opts.ignore_blanks));
     let cmp = |a: &&[u8], b: &&[u8]| full_compare(a, b, opts, cfg.reverse, stable);
 
-    let fused_top = cfg.top.filter(|_| !cfg.unique);
+    // The select_nth fast path reorders equal elements, so it can only be used
+    // when neither stability nor uniqueness is requested; otherwise fall back to
+    // a full (stable, when required) sort and truncate afterwards.
+    let fused_top = cfg.top.filter(|_| !cfg.unique && !stable);
     match fused_top {
         Some(n) => {
             let n = n.min(lines.len());
@@ -204,9 +207,9 @@ fn byte_order<'a>(
         let before = lines.len();
         lines.dedup_by(|a, b| compare_key(a, b, opts) == Ordering::Equal);
         dups = before - lines.len();
-        if let Some(n) = cfg.top {
-            lines.truncate(n);
-        }
+    }
+    if let Some(n) = cfg.top {
+        lines.truncate(n);
     }
     (lines, dups)
 }
@@ -231,7 +234,9 @@ fn numeric_order<'a>(lines: Vec<&'a [u8]>, cfg: &Config) -> (Vec<&'a [u8]>, usiz
         }
     };
 
-    let fused_top = cfg.top.filter(|_| !cfg.unique);
+    // See `byte_order`: the unstable select_nth shortcut is unsound when
+    // stability or uniqueness is requested.
+    let fused_top = cfg.top.filter(|_| !cfg.unique && !stable);
     match fused_top {
         Some(n) => {
             let n = n.min(dec.len());
@@ -253,9 +258,9 @@ fn numeric_order<'a>(lines: Vec<&'a [u8]>, cfg: &Config) -> (Vec<&'a [u8]>, usiz
         let before = dec.len();
         dec.dedup_by(|a, b| a.0.cmp(&b.0) == Ordering::Equal);
         dups = before - dec.len();
-        if let Some(n) = cfg.top {
-            dec.truncate(n);
-        }
+    }
+    if let Some(n) = cfg.top {
+        dec.truncate(n);
     }
     (dec.into_iter().map(|(_, l)| l).collect(), dups)
 }
@@ -310,7 +315,9 @@ fn single_key_order<'a>(
         })
         .collect();
 
-    let fused_top = cfg.top.filter(|_| !cfg.unique);
+    // See `byte_order`: the unstable select_nth shortcut is unsound when
+    // stability or uniqueness is requested (`stable` already implies `-u`).
+    let fused_top = cfg.top.filter(|_| !stable);
     match fused_top {
         Some(n) => {
             let n = n.min(dec.len());
@@ -332,9 +339,9 @@ fn single_key_order<'a>(
         let before = dec.len();
         dec.dedup_by(|a, b| key_cmp(&a.0, &b.0) == Ordering::Equal);
         dups = before - dec.len();
-        if let Some(n) = cfg.top {
-            dec.truncate(n);
-        }
+    }
+    if let Some(n) = cfg.top {
+        dec.truncate(n);
     }
     (dec.into_iter().map(|(_, l)| l).collect(), dups)
 }
@@ -398,7 +405,9 @@ fn general_order<'a>(
 
     let mut recs: Vec<(usize, &[u8])> = (0..n).map(|i| (i * k, lines[i])).collect();
 
-    let fused_top = cfg.top.filter(|_| !cfg.unique);
+    // See `byte_order`: the unstable select_nth shortcut is unsound when
+    // stability or uniqueness is requested (`stable` already implies `-u`).
+    let fused_top = cfg.top.filter(|_| !stable);
     match fused_top {
         Some(top) => {
             let top = top.min(recs.len());
@@ -420,9 +429,9 @@ fn general_order<'a>(
         let before = recs.len();
         recs.dedup_by(|a, b| key_cmp(a.0, b.0) == Ordering::Equal);
         dups = before - recs.len();
-        if let Some(top) = cfg.top {
-            recs.truncate(top);
-        }
+    }
+    if let Some(top) = cfg.top {
+        recs.truncate(top);
     }
     (recs.into_iter().map(|(_, l)| l).collect(), dups)
 }
