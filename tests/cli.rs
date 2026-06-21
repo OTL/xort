@@ -856,3 +856,213 @@ fn json_non_array_input_errors() {
     let (_, code) = xort(&["--json", "-k", "v"], b"{\"v\":1}");
     assert_eq!(code, 2, "non-array --json input should exit 2");
 }
+// --- Tier-1 features: compressed I/O, date sort, progress ---------------
+
+/// A unique temp path for a test, ending in `suffix` (e.g. ".gz"); the file at
+/// exactly this path is removed on `Drop`, so it never leaks even if a test
+/// assertion panics first.
+struct TempPath(std::path::PathBuf);
+impl TempPath {
+    fn new(suffix: &str) -> Self {
+        let p = std::env::temp_dir().join(format!(
+            "xort_it_{}_{}{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            suffix,
+        ));
+        TempPath(p)
+    }
+    fn str(&self) -> &str {
+        self.0.to_str().unwrap()
+    }
+}
+impl Drop for TempPath {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Round-trip through the binary: compress on output (by extension), then read
+/// it back (by magic bytes). Exercises both halves with no external tools.
+fn compress_roundtrip(ext: &str, extra: &[&str]) {
+    // The TempPath itself carries the extension, so the file actually written
+    // is the one Drop removes — no leak on a failed assertion.
+    let f = TempPath::new(&format!(".{ext}"));
+    let path = f.str();
+    let mut args: Vec<&str> = extra.to_vec();
+    args.extend_from_slice(&["-o", path]);
+    let (_, code) = xort(&args, b"banana\napple\ncherry\n");
+    assert_eq!(code, 0, "compress to .{ext} should succeed");
+    // The on-disk bytes must not be the plain sorted text.
+    let raw = std::fs::read(path).unwrap();
+    assert_ne!(
+        raw, b"apple\nbanana\ncherry\n",
+        ".{ext} output should be compressed"
+    );
+    // Reading it back (magic-detected) yields the original sorted lines.
+    let (out, code) = xort(&[path], b"");
+    assert_eq!(code, 0);
+    assert_eq!(out, b"apple\nbanana\ncherry\n");
+}
+
+#[test]
+fn compress_roundtrip_gzip() {
+    compress_roundtrip("gz", &[]);
+}
+
+#[test]
+fn compress_roundtrip_zstd() {
+    compress_roundtrip("zst", &[]);
+}
+
+#[test]
+fn compress_roundtrip_gzip_external() {
+    // -S forces the external merge path; compression must work there too.
+    compress_roundtrip("gz", &["-S", "1K"]);
+}
+
+#[test]
+fn date_sort_iso_and_epoch() {
+    // 1700000000 == 2023-11-14T..Z, between 2020 and 2024.
+    assert_eq!(
+        run(
+            &["--date-sort"],
+            "2024-03-01T12:00:00Z\n1700000000\n2020-01-01\n2024-03-01T08:00:00Z\n"
+        ),
+        "2020-01-01\n1700000000\n2024-03-01T08:00:00Z\n2024-03-01T12:00:00Z\n"
+    );
+}
+
+#[test]
+fn date_sort_key_field() {
+    assert_eq!(
+        run(&["-k2,2D"], "b 2024-12-31\na 2024-01-15\nc 2024-06-01\n"),
+        "a 2024-01-15\nc 2024-06-01\nb 2024-12-31\n"
+    );
+}
+
+#[test]
+fn date_sort_unparseable_sorts_first() {
+    assert_eq!(
+        run(&["--date-sort"], "2024-01-01\nNOTADATE\n2023-01-01\n"),
+        "NOTADATE\n2023-01-01\n2024-01-01\n"
+    );
+}
+
+#[test]
+fn date_sort_reverse() {
+    assert_eq!(
+        run(
+            &["--date-sort", "-r"],
+            "2020-01-01\n2024-01-01\n2022-01-01\n"
+        ),
+        "2024-01-01\n2022-01-01\n2020-01-01\n"
+    );
+}
+
+#[test]
+fn date_sort_apache_log() {
+    // Apache common-log timestamps with offsets, out of order.
+    assert_eq!(
+        run(
+            &["--date-sort"],
+            "10/Oct/2000:13:55:36 -0700\n10/Oct/2000:13:55:36 -0800\n09/Oct/2000:00:00:00 +0000\n"
+        ),
+        "09/Oct/2000:00:00:00 +0000\n10/Oct/2000:13:55:36 -0700\n10/Oct/2000:13:55:36 -0800\n"
+    );
+}
+
+#[test]
+fn progress_flag_does_not_corrupt_stdout() {
+    // stderr is not a TTY under the test harness, so the bar is suppressed;
+    // either way stdout must be exactly the sorted bytes.
+    assert_eq!(run(&["-n", "--progress"], "3\n1\n2\n"), "1\n2\n3\n");
+}
+
+#[test]
+fn merge_with_progress_is_correct() {
+    // --merge now participates in --progress; stdin merge still produces the
+    // correct k-way merge and never corrupts stdout.
+    assert_eq!(run(&["-m", "--progress"], "1\n3\n5\n"), "1\n3\n5\n");
+}
+
+#[test]
+fn date_sort_multikey() {
+    // Date key then numeric tie-break (exercises the multi-key general_order
+    // Dec::Date arm).
+    assert_eq!(
+        run(
+            &["-k1,1D", "-k2,2n"],
+            "2024-01-01 10\n2024-01-01 2\n2023-06-01 5\n"
+        ),
+        "2023-06-01 5\n2024-01-01 2\n2024-01-01 10\n"
+    );
+}
+
+#[test]
+fn date_sort_external() {
+    // -S routes through run_external, which compares via datetime_cmp.
+    assert_eq!(
+        run(
+            &["--date-sort", "-S", "1K"],
+            "2024-01-01\n2020-01-01\n2022-01-01\n"
+        ),
+        "2020-01-01\n2022-01-01\n2024-01-01\n"
+    );
+}
+
+#[test]
+fn merge_compressed_files() {
+    // Two pre-sorted gzip inputs, merged. Exercises read_each_with's per-file
+    // transparent decompression on the merge path.
+    let a = TempPath::new(".gz");
+    let b = TempPath::new(".gz");
+    assert_eq!(xort(&["-n", "-o", a.str()], b"1\n3\n5\n").1, 0);
+    assert_eq!(xort(&["-n", "-o", b.str()], b"2\n4\n6\n").1, 0);
+    let (out, code) = xort(&["-n", "-m", a.str(), b.str()], b"");
+    assert_eq!(code, 0);
+    assert_eq!(out, b"1\n2\n3\n4\n5\n6\n");
+}
+
+#[test]
+fn csv_output_compressed_round_trip() {
+    // Sort a CSV by a named column, write gzip, read it back as CSV.
+    let f = TempPath::new(".gz");
+    let (_, code) = xort(
+        &["--csv", "--header", "-k", "age", "-n", "-o", f.str()],
+        b"name,age\nbob,30\nann,20\n",
+    );
+    assert_eq!(code, 0);
+    // Read back with --header so the header stays pinned; the data rows are
+    // already in order, so the round-tripped bytes match.
+    let (out, code) = xort(&["--csv", "--header", f.str()], b"");
+    assert_eq!(code, 0);
+    assert_eq!(out, b"name,age\nann,20\nbob,30\n");
+}
+
+#[test]
+fn jsonl_output_compressed_round_trip() {
+    // Sort JSONL by a field, write zstd, read it back.
+    let f = TempPath::new(".zst");
+    let (_, code) = xort(
+        &["--jsonl", "-k", ".n", "-o", f.str()],
+        b"{\"n\":3}\n{\"n\":1}\n{\"n\":2}\n",
+    );
+    assert_eq!(code, 0);
+    let (out, code) = xort(&["--jsonl", f.str()], b"");
+    assert_eq!(code, 0);
+    assert_eq!(out, b"{\"n\":1}\n{\"n\":2}\n{\"n\":3}\n");
+}
+
+#[test]
+fn corrupt_compressed_input_exits_2() {
+    // A file with a gzip magic but garbage body fails cleanly (exit 2), in both
+    // the in-memory and external (-S) read paths.
+    let f = TempPath::new(".gz");
+    std::fs::write(f.0.as_path(), b"\x1f\x8b\x08garbage-body-not-deflate").unwrap();
+    assert_eq!(xort(&[f.str()], b"").1, 2);
+    assert_eq!(xort(&["-S", "1K", f.str()], b"").1, 2);
+}

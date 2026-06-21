@@ -9,6 +9,7 @@
 
 pub mod cli;
 pub mod compare;
+pub mod compress;
 pub mod config;
 pub mod diag;
 pub mod engine;

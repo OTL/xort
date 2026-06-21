@@ -45,11 +45,11 @@ Output must be **byte-identical to `LC_ALL=C sort`**. `scripts/difftest.sh` is t
 5. `--count` → `grouped_counts`
 6. else in-memory: `is_simple_global()` ? (`numeric_order` | `byte_order`) : `general_order`
 
-**Comparators.** `src/compare.rs` holds the per-kind comparison logic (`compare_kind` dispatches on `key::Kind`: Bytes/Numeric/General/Human/Version/Month) plus `NumericKey` (a parse-once numeric representation). `src/key.rs` holds `KeyDef` (one `-k` spec, 1-based fields), `parse_key_spec` (the densest GNU-compat surface — `F.C,F.C[opts]` with all-or-nothing global option inheritance), and `Sorter` (`compare`, `key_equal`, `check_compare`, key-range extraction for highlighting).
+**Comparators.** `src/compare.rs` holds the per-kind comparison logic (`compare_kind` dispatches on `key::Kind`: Bytes/Numeric/General/Human/Version/Month/DateTime) plus `NumericKey` (a parse-once numeric representation) and `parse_datetime` (jiff-backed timestamp parsing for `--date-sort` / `-k…D`: ISO-8601, Unix epoch, Apache/syslog; returns `i128` epoch nanoseconds, unparseable → sorts first). `src/key.rs` holds `KeyDef` (one `-k` spec, 1-based fields), `parse_key_spec` (the densest GNU-compat surface — `F.C,F.C[opts]` with all-or-nothing global option inheritance; option letters `DbfghMnrV`), and `Sorter` (`compare`, `key_equal`, `check_compare`, key-range extraction for highlighting).
 
-**Decorate-sort-undecorate (DSU) is load-bearing for speed — do not regress it.** The hot sort paths precompute each line's key *once* rather than re-extracting/re-parsing on every comparison (which is O(n log n) extractions):
+**Decorate-sort-undecorate (DSU) is load-bearing for speed — do not regress it.** The hot sort paths precompute each line's key *once* rather than re-extracting/re-parsing on every comparison (which is O(n log n) extractions). The shared `decorate(kb, kind)` helper builds a `Dec`: numeric → `Dec::Num`, date → `Dec::Date(i128)` (both parsed up front), else a zero-copy `Dec::Slice`.
 - `numeric_order` — global `-n`, decorates with `NumericKey`.
-- `single_key_order` — one `-k` key; decorates each line into a `Dec` (numeric parsed up front, else a zero-copy slice).
+- `single_key_order` — one `-k` key; decorates each line into a `Dec`.
 - `general_order` multi-key — decorates all keys into one flat `Vec<Dec>` (`dec[i*k + j]`); records carry only an index into it, avoiding a per-line allocation.
 
 All in-memory paths sort borrowed `&[u8]` slices into one buffer (zero-copy) via rayon `par_sort_*`; `--top` uses `select_nth_unstable_by` to avoid a full sort. If you add a path, preserve both properties.
@@ -62,7 +62,8 @@ All in-memory paths sort borrowed `&[u8]` slices into one buffer (zero-copy) via
 
 - **`-h` and `-V` are NOT help/version.** `src/cli.rs` sets `disable_help_flag`/`disable_version_flag` so `-h` = human-numeric and `-V` = version-sort (GNU semantics); `--help`/`--version` are long-only.
 - **Stability:** there is no separate stable sort path — equal-key ties fall back to a whole-line last-resort comparison (under `global_reverse`) unless `suppress_last_resort` (`-s`/`-u`) is set, in which case the parallel *stable* sort preserves input order.
-- **Color must never corrupt pipes:** key highlighting is gated on TTY + `NO_COLOR` + `--color` via `anstream` (`src/diag.rs`).
+- **Color must never corrupt pipes:** key highlighting is gated on TTY + `NO_COLOR` + `--color` via `anstream` (`src/diag.rs`). The `--progress` bar (`indicatif`) follows the same rule: `diag::progress_enabled` only returns true when stderr is a TTY, and the bar draws to stderr only — stdout output is never touched.
+- **Transparent compression (`src/compress.rs`):** input is decompressed by magic-byte sniffing (`maybe_decompress`, works for stdin and mis-named files); output is compressed by `-o` extension (`wrap_writer` + `detect_ext`). Only gzip/zstd; stdout is never compressed. Wired at the I/O chokepoints (`input.rs`, `external.rs::open_input`/`open_output`, engine/format writers) — the sort core never sees compression.
 - Completions (`--completions SHELL`) and the man page (`--man`) are generated at runtime in `cli.rs`/`main.rs` via `clap_complete`/`clap_mangen` — there is no `build.rs`.
 
 ## Benchmarks

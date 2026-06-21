@@ -8,6 +8,7 @@
 
 use crate::config::Config;
 use crate::key::Sorter;
+use indicatif::ProgressBar;
 use rayon::prelude::*;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -88,18 +89,31 @@ impl Read for MultiInput {
 }
 
 /// Open all inputs (files and/or stdin) as one separator-inserting reader.
-fn open_input(cfg: &Config, terminator: u8) -> io::Result<MultiInput> {
+/// Raw bytes are counted into `pb` (before decompression) so `--progress`
+/// tracks against on-disk file sizes.
+fn open_input(cfg: &Config, terminator: u8, pb: Option<&ProgressBar>) -> io::Result<MultiInput> {
     let mut readers: Vec<Box<dyn Read>> = Vec::new();
+    let wrap = |r: Box<dyn Read>| -> Box<dyn Read> {
+        match pb {
+            Some(pb) => Box::new(pb.wrap_read(r)),
+            None => r,
+        }
+    };
     if cfg.files.is_empty() {
-        readers.push(Box::new(io::stdin()));
+        readers.push(crate::compress::maybe_decompress(wrap(Box::new(
+            io::stdin(),
+        )))?);
     } else {
         for p in &cfg.files {
             if p.as_os_str() == "-" {
-                readers.push(Box::new(io::stdin()));
+                readers.push(crate::compress::maybe_decompress(wrap(Box::new(
+                    io::stdin(),
+                )))?);
             } else {
-                readers.push(Box::new(File::open(p).map_err(|e| {
-                    io::Error::new(e.kind(), format!("{}: {}", p.display(), e))
-                })?));
+                let ctx =
+                    |e: io::Error| io::Error::new(e.kind(), format!("{}: {}", p.display(), e));
+                let f = File::open(p).map_err(ctx)?;
+                readers.push(crate::compress::maybe_decompress(wrap(Box::new(f))).map_err(ctx)?);
             }
         }
     }
@@ -167,8 +181,9 @@ pub fn run_external(
     sorter: &Sorter,
     budget: usize,
     terminator: u8,
+    pb: Option<&ProgressBar>,
 ) -> io::Result<(usize, usize, usize)> {
-    let mut reader = open_input(cfg, terminator)?;
+    let mut reader = open_input(cfg, terminator, pb)?;
     let temp_dir = cfg.temp_dirs.first().cloned();
     let stable = cfg.stable || cfg.unique;
 
@@ -226,11 +241,12 @@ pub fn run_external(
 /// stdout. Created lazily by `run_external` once all input is consumed.
 fn open_output(cfg: &Config) -> io::Result<Box<dyn Write>> {
     Ok(match &cfg.output {
-        Some(p) => Box::new(BufWriter::with_capacity(
-            IO_BUF,
-            File::create(p)
-                .map_err(|e| io::Error::new(e.kind(), format!("{}: {}", p.display(), e)))?,
-        )),
+        Some(p) => {
+            // Compress by output extension (stdout is never compressed); errors
+            // carry the path.
+            let w = crate::compress::create_output(p)?;
+            Box::new(BufWriter::with_capacity(IO_BUF, w))
+        }
         None => Box::new(BufWriter::with_capacity(IO_BUF, io::stdout().lock())),
     })
 }

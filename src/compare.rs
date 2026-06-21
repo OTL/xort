@@ -297,6 +297,88 @@ fn month_num(s: &[u8]) -> u8 {
     }
 }
 
+/// Date/time comparison (`--date-sort` / key option `D`): orders by the parsed
+/// instant. Unparseable values sort first (like `-M`'s unknown < JAN), so a
+/// stray non-date line floats to the top rather than sorting unpredictably.
+pub fn datetime_cmp(a: &[u8], b: &[u8]) -> Ordering {
+    // i128 nanoseconds; `None` (unparseable) is smallest.
+    parse_datetime(a).cmp(&parse_datetime(b))
+}
+
+/// strptime fallbacks tried after the ISO/epoch fast paths. The `bool` marks
+/// formats that carry no year (syslog), for which a fixed reference year is
+/// filled so within-year ordering is still correct.
+const DATE_PATTERNS: &[(&str, bool)] = &[
+    ("%d/%b/%Y:%H:%M:%S %z", false), // Apache common log: 10/Oct/2000:13:55:36 -0700
+    ("%Y-%m-%d %H:%M:%S", false),    // ISO-ish with a space separator
+    ("%Y/%m/%d %H:%M:%S", false),
+    ("%b %e %H:%M:%S", true), // syslog (space-padded day, no year)
+    ("%b %d %H:%M:%S", true), // syslog (zero-padded day, no year)
+];
+
+/// Parse a timestamp into nanoseconds since the Unix epoch, trying a series of
+/// common formats (RFC 3339 / ISO-8601, a date alone, a Unix epoch in seconds,
+/// Apache and syslog log timestamps). Returns `None` when nothing matches.
+pub fn parse_datetime(s: &[u8]) -> Option<i128> {
+    let s = trim_blanks(s);
+    if s.is_empty() {
+        return None;
+    }
+    let txt = std::str::from_utf8(s).ok()?;
+
+    // 1) RFC 3339 / ISO-8601 with an offset → an exact instant.
+    if let Ok(ts) = txt.parse::<jiff::Timestamp>() {
+        return Some(ts.as_nanosecond());
+    }
+    // 2) ISO-8601 civil datetime (no offset) → interpret as UTC.
+    if let Ok(dt) = txt.parse::<jiff::civil::DateTime>() {
+        return civil_nanos(dt);
+    }
+    // 3) An ISO date on its own → midnight UTC.
+    if let Ok(d) = txt.parse::<jiff::civil::Date>() {
+        return civil_nanos(d.to_datetime(jiff::civil::Time::midnight()));
+    }
+    // 4) A bare Unix epoch in seconds (optionally signed).
+    if is_signed_digits(s) {
+        if let Ok(secs) = txt.parse::<i64>() {
+            if let Ok(ts) = jiff::Timestamp::from_second(secs) {
+                return Some(ts.as_nanosecond());
+            }
+        }
+    }
+    // 5) strptime fallbacks (Apache / syslog).
+    for (fmt, needs_year) in DATE_PATTERNS {
+        if let Ok(mut tm) = jiff::fmt::strtime::parse(fmt, txt) {
+            if *needs_year && tm.year().is_none() {
+                let _ = tm.set_year(Some(2000));
+            }
+            // Prefer an exact instant (offset present), else assume UTC.
+            if let Ok(ts) = tm.to_timestamp() {
+                return Some(ts.as_nanosecond());
+            }
+            if let Ok(dt) = tm.to_datetime() {
+                if let Some(n) = civil_nanos(dt) {
+                    return Some(n);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Nanoseconds since the epoch for a civil datetime interpreted as UTC.
+fn civil_nanos(dt: jiff::civil::DateTime) -> Option<i128> {
+    dt.to_zoned(jiff::tz::TimeZone::UTC)
+        .ok()
+        .map(|z| z.timestamp().as_nanosecond())
+}
+
+/// True if `s` is one or more ASCII digits, optionally preceded by `-`.
+fn is_signed_digits(s: &[u8]) -> bool {
+    let s = if s.first() == Some(&b'-') { &s[1..] } else { s };
+    !s.is_empty() && s.iter().all(u8::is_ascii_digit)
+}
+
 /// Version comparison (`-V`): natural ordering of mixed letter/number runs,
 /// so `v2 < v10` and `1.9 < 1.10`. A pragmatic `strverscmp`-style algorithm.
 pub fn version_cmp(a: &[u8], b: &[u8]) -> Ordering {
@@ -343,6 +425,7 @@ pub fn compare_kind(a: &[u8], b: &[u8], kind: crate::key::Kind, fold: bool) -> O
         Kind::Human => human_cmp(a, b),
         Kind::Version => version_cmp(a, b),
         Kind::Month => month_cmp(a, b),
+        Kind::DateTime => datetime_cmp(a, b),
         Kind::Bytes => {
             if fold {
                 fold_cmp(a, b)
@@ -508,6 +591,10 @@ mod tests {
         assert_eq!(compare_kind(b"v2", b"v10", Kind::Version, false), Less);
         assert_eq!(compare_kind(b"1K", b"2K", Kind::Human, false), Less);
         assert_eq!(compare_kind(b"JAN", b"FEB", Kind::Month, false), Less);
+        assert_eq!(
+            compare_kind(b"2020-01-01", b"2024-01-01", Kind::DateTime, false),
+            Less
+        );
         assert_eq!(compare_kind(b"abc", b"ABC", Kind::Bytes, true), Equal);
         assert_eq!(compare_kind(b"abc", b"abd", Kind::Bytes, false), Less);
         assert_eq!(compare_kind(b"1e3", b"50", Kind::General, false), Greater);
@@ -603,5 +690,52 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(compare_key(b"  5", b"5", &ob), Equal);
+    }
+
+    #[test]
+    fn datetime_parsing_formats() {
+        // RFC 3339 with offset normalizes to the same instant.
+        assert_eq!(
+            parse_datetime(b"2024-03-01T12:00:00+00:00"),
+            parse_datetime(b"2024-03-01T12:00:00Z")
+        );
+        // Offsets are honored: -0700 wall time is earlier (in UTC) than -0800.
+        assert!(
+            parse_datetime(b"10/Oct/2000:13:55:36 -0700")
+                < parse_datetime(b"10/Oct/2000:13:55:36 -0800")
+        );
+        // ISO date, ISO datetime, and Unix epoch all parse.
+        assert!(parse_datetime(b"2020-01-01").is_some());
+        assert!(parse_datetime(b"2020-01-01 12:30:00").is_some());
+        assert!(parse_datetime(b"1700000000").is_some());
+        // Garbage does not parse.
+        assert_eq!(parse_datetime(b"NOTADATE"), None);
+        assert_eq!(parse_datetime(b""), None);
+    }
+
+    #[test]
+    fn datetime_ordering_and_unknown_first() {
+        assert_eq!(datetime_cmp(b"2020-01-01", b"2024-01-01"), Less);
+        assert_eq!(datetime_cmp(b"2024-01-01", b"2020-01-01"), Greater);
+        // Unparseable (None) sorts before any real date.
+        assert_eq!(datetime_cmp(b"NOTADATE", b"2020-01-01"), Less);
+        assert_eq!(datetime_cmp(b"bad", b"alsobad"), Equal);
+    }
+
+    #[test]
+    fn datetime_log_and_fallback_formats() {
+        // syslog, space-padded day, no year (default year filled): ordered within
+        // the same (synthetic) year by month/day/time.
+        assert_eq!(datetime_cmp(b"Jan  2 03:04:05", b"Jan 10 03:04:05"), Less);
+        // syslog with a zero-padded day (%b %d) also parses.
+        assert!(parse_datetime(b"Jan 02 03:04:05").is_some());
+        // Slash-separated date-time (%Y/%m/%d H:M:S).
+        assert!(parse_datetime(b"2024/03/01 12:00:00").is_some());
+        assert_eq!(
+            datetime_cmp(b"2024/03/01 12:00:00", b"2024/03/01 12:00:01"),
+            Less
+        );
+        // Negative Unix epoch (before 1970) parses and orders before 0.
+        assert_eq!(datetime_cmp(b"-100", b"0"), Less);
     }
 }

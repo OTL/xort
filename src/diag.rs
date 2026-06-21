@@ -27,6 +27,12 @@ fn color_stderr(cfg: &Config) -> bool {
     }
 }
 
+/// Whether to render the `--progress` bar: only when `--progress` is set and
+/// stderr is a terminal, so it never corrupts a redirected stderr or a pipe.
+pub fn progress_enabled(cfg: &Config) -> bool {
+    cfg.progress && io::stderr().is_terminal()
+}
+
 /// Write `line` with the byte range `[s, e)` highlighted as the sort key.
 pub fn write_highlighted<W: Write>(
     w: &mut W,
