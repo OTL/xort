@@ -1,0 +1,30 @@
+[package]
+name = "fsort"
+version = "0.1.0"
+edition = "2021"
+description = "A fast, modern, parallel drop-in replacement for the Unix sort command"
+license = "MIT OR Unlicense"
+repository = "https://github.com/otl/pss"
+readme = "README.md"
+keywords = ["sort", "cli", "coreutils", "parallel", "performance"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "fsort"
+path = "src/main.rs"
+
+[lib]
+name = "fsort"
+path = "src/lib.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+memchr = "2"
+rayon = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
+[dev-dependencies]
