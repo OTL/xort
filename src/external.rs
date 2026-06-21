@@ -362,4 +362,22 @@ mod tests {
         assert_eq!(parse_size("1G").unwrap(), 1024 * 1024 * 1024);
         assert!(parse_size("abc").is_err());
     }
+
+    #[test]
+    fn sizes_all_suffixes_and_edges() {
+        // A bare `b`/`B` suffix means bytes (multiplier 1).
+        assert_eq!(parse_size("42b").unwrap(), 42);
+        assert_eq!(parse_size("7B").unwrap(), 7);
+        // The large suffixes T and P.
+        assert_eq!(parse_size("1T").unwrap(), 1usize << 40);
+        assert_eq!(parse_size("1P").unwrap(), 1usize << 50);
+        // Case-insensitive units and surrounding whitespace.
+        assert_eq!(parse_size("3k").unwrap(), 3 * 1024);
+        assert_eq!(parse_size("  8m  ").unwrap(), 8 * 1024 * 1024);
+        // A size of zero is clamped up to at least one byte.
+        assert_eq!(parse_size("0").unwrap(), 1);
+        // An empty string is rejected.
+        assert!(parse_size("").is_err());
+        assert!(parse_size("   ").is_err());
+    }
 }

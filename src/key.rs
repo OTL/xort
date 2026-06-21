@@ -462,4 +462,140 @@ mod tests {
         let line = b"abcde";
         assert_eq!(extract(line, &key(1, 2, Some(1), 3), None), b"bc");
     }
+
+    #[test]
+    fn kind_from_opts_all_letters() {
+        assert_eq!(kind_from_opts("n"), Kind::Numeric);
+        assert_eq!(kind_from_opts("g"), Kind::General);
+        assert_eq!(kind_from_opts("h"), Kind::Human);
+        assert_eq!(kind_from_opts("V"), Kind::Version);
+        assert_eq!(kind_from_opts("M"), Kind::Month);
+        assert_eq!(kind_from_opts("rb"), Kind::Bytes); // no type letter
+                                                       // `n` wins when several type letters appear (matches the if-chain order).
+        assert_eq!(kind_from_opts("gn"), Kind::Numeric);
+    }
+
+    #[test]
+    fn parse_pos_basic_and_char() {
+        assert_eq!(parse_pos("2").unwrap(), (2, 0, String::new()));
+        assert_eq!(parse_pos("3.5").unwrap(), (3, 5, String::new()));
+        assert_eq!(parse_pos("1.2nr").unwrap(), (1, 2, "nr".to_string()));
+    }
+
+    #[test]
+    fn parse_pos_errors() {
+        // no leading digit
+        assert!(parse_pos(".5").is_err());
+        assert!(parse_pos("x").is_err());
+        // field zero is rejected
+        assert!(parse_pos("0").is_err());
+        // a '.' with no character position
+        assert!(parse_pos("2.").is_err());
+        // an unknown ordering-option letter
+        assert!(parse_pos("2.1z").is_err());
+    }
+
+    #[test]
+    fn parse_key_spec_inherits_global() {
+        let global = GlobalOrder {
+            kind: Kind::Numeric,
+            fold: true,
+            ignore_blanks: true,
+            reverse: true,
+        };
+        // No inline options: inherit everything from the global order.
+        let kd = parse_key_spec("2", &global).unwrap();
+        assert_eq!(kd.kind, Kind::Numeric);
+        assert!(kd.fold);
+        assert!(kd.reverse);
+        assert!(kd.skip_sblanks);
+        assert!(kd.skip_eblanks);
+
+        // Inline options: global order is NOT inherited (all-or-nothing).
+        let kd = parse_key_spec("2,3r", &global).unwrap();
+        assert_eq!(kd.kind, Kind::Bytes);
+        assert!(!kd.fold);
+        assert!(kd.reverse);
+        assert_eq!(kd.start_field, 2);
+        assert_eq!(kd.end_field, Some(3));
+    }
+
+    #[test]
+    fn parse_key_spec_blank_options_per_position() {
+        let global = GlobalOrder::default();
+        // -b on the start position only skips leading blanks at the start.
+        let kd = parse_key_spec("1b,2", &global).unwrap();
+        assert!(kd.skip_sblanks);
+        assert!(!kd.skip_eblanks);
+        // -b on the end position only.
+        let kd = parse_key_spec("1,2b", &global).unwrap();
+        assert!(!kd.skip_sblanks);
+        assert!(kd.skip_eblanks);
+    }
+
+    #[test]
+    fn parse_key_spec_propagates_pos_errors() {
+        let global = GlobalOrder::default();
+        assert!(parse_key_spec("0", &global).is_err());
+        assert!(parse_key_spec("1,0", &global).is_err());
+    }
+
+    #[test]
+    fn extract_skip_blanks_and_clamp() {
+        // skip_sblanks trims the leading blanks of the start field.
+        let mut k = key(2, 1, Some(2), 0);
+        k.skip_sblanks = true;
+        assert_eq!(extract(b"foo   bar", &k, None), b"bar");
+        // A start char beyond the line clamps to an empty key.
+        let k2 = key(1, 50, None, 0);
+        assert_eq!(extract(b"short", &k2, None), b"");
+    }
+
+    #[test]
+    fn extract_end_char_with_skip_eblanks() {
+        // -k2.2,2.3 with end-blank skipping resolves a char range inside field 2.
+        let mut k = key(2, 1, Some(2), 3);
+        k.skip_eblanks = true;
+        // field 2 is "  bar"; skip_eblanks moves past the blanks before counting.
+        assert_eq!(extract(b"a   bar", &k, None), b"   bar");
+    }
+
+    fn sorter(keys: Vec<KeyDef>) -> Sorter {
+        Sorter {
+            keys,
+            tab: None,
+            global_reverse: false,
+            suppress_last_resort: false,
+        }
+    }
+
+    #[test]
+    fn sorter_key_equal_and_check() {
+        let s = sorter(vec![key(1, 1, Some(1), 0)]);
+        assert!(s.key_equal(b"a b", b"a c")); // first field equal
+        assert!(!s.key_equal(b"a b", b"x c"));
+        assert_eq!(s.check_compare(b"a b", b"b c"), Ordering::Less);
+    }
+
+    #[test]
+    fn sorter_first_key_range_and_breaking() {
+        // No keys: the whole line is the range.
+        let whole = sorter(vec![]);
+        assert_eq!(whole.first_key_range(b"hello"), (0, 5));
+
+        let s = sorter(vec![key(2, 1, Some(2), 0)]);
+        // Field 2 of "a bb c" is "bb" (whitespace mode includes a leading blank).
+        let (b, e) = s.first_key_range(b"a bb c");
+        assert_eq!(&b"a bb c"[b..e], b" bb");
+        // The breaking key range points at the field that differs.
+        let (b, e) = s.breaking_key_range(b"a bb c", b"a zz c");
+        assert_eq!(&b"a zz c"[b..e], b" zz");
+    }
+
+    #[test]
+    fn sorter_breaking_key_range_falls_back_to_whole_line() {
+        // When all keys compare equal, the range is the whole second line.
+        let s = sorter(vec![key(1, 1, Some(1), 0)]);
+        assert_eq!(s.breaking_key_range(b"a x", b"a y"), (0, 3));
+    }
 }
