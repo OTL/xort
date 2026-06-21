@@ -1,12 +1,14 @@
 //! External merge sort: for inputs that should not be held fully in memory.
 //!
 //! Activated by `-S SIZE`. The input is streamed in `SIZE`-byte chunks; each
-//! chunk is sorted in memory and spilled to a temp file as terminated lines;
-//! the sorted runs are then k-way merged to the output. Temp files are cleaned
-//! up via `tempfile`'s RAII (including on error unwind).
+//! chunk is read as one block of zero-copy line slices and sorted in parallel
+//! (rayon). A single chunk streams straight to the output; multiple chunks are
+//! spilled to temp files and k-way merged. Temp files are cleaned up via
+//! `tempfile`'s RAII (including on error unwind).
 
 use crate::config::Config;
 use crate::key::Sorter;
+use rayon::prelude::*;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::fs::File;
@@ -37,156 +39,166 @@ pub fn parse_size(s: &str) -> Result<usize, String> {
     Ok((n.saturating_mul(mult)).max(1) as usize)
 }
 
-/// A streaming line reader over multiple inputs, yielding owned lines.
-struct LineSource {
-    readers: Vec<Box<dyn Read>>,
-    idx: usize,
-    buf: Vec<u8>,
-    pos: usize,
-    filled: usize,
-    terminator: u8,
-    carry: Vec<u8>,
+/// Read buffers sized for throughput rather than latency.
+const IO_BUF: usize = 1 << 18; // 256 KiB
+
+/// Concatenate all inputs (files and/or stdin) into one reader.
+fn open_input(cfg: &Config) -> io::Result<Box<dyn Read>> {
+    if cfg.files.is_empty() {
+        return Ok(Box::new(io::stdin()));
+    }
+    let mut chained: Option<Box<dyn Read>> = None;
+    for p in &cfg.files {
+        let r: Box<dyn Read> = if p.as_os_str() == "-" {
+            Box::new(io::stdin())
+        } else {
+            Box::new(
+                File::open(p)
+                    .map_err(|e| io::Error::new(e.kind(), format!("{}: {}", p.display(), e)))?,
+            )
+        };
+        chained = Some(match chained {
+            None => r,
+            Some(prev) => Box::new(prev.chain(r)),
+        });
+    }
+    Ok(chained.unwrap_or_else(|| Box::new(io::empty())))
 }
 
-impl LineSource {
-    fn new(cfg: &Config, terminator: u8) -> io::Result<Self> {
-        let mut readers: Vec<Box<dyn Read>> = Vec::new();
-        if cfg.files.is_empty() {
-            readers.push(Box::new(io::stdin()));
-        } else {
-            for p in &cfg.files {
-                if p.as_os_str() == "-" {
-                    readers.push(Box::new(io::stdin()));
-                } else {
-                    readers.push(Box::new(File::open(p).map_err(|e| {
-                        io::Error::new(e.kind(), format!("{}: {}", p.display(), e))
-                    })?));
-                }
-            }
+/// Read the next chunk of *complete* lines into `block`, bounded by `budget`
+/// bytes. Any trailing partial line is preserved in `carry` for the next call.
+/// Returns whether EOF was reached.
+fn read_block(
+    r: &mut dyn Read,
+    budget: usize,
+    terminator: u8,
+    carry: &mut Vec<u8>,
+    block: &mut Vec<u8>,
+) -> io::Result<bool> {
+    block.clear();
+    block.append(carry); // start with the leftover partial line, if any
+    let mut tmp = [0u8; IO_BUF];
+    while block.len() < budget {
+        let n = r.read(&mut tmp)?;
+        if n == 0 {
+            return Ok(true); // EOF: everything in `block` is this final chunk
         }
-        Ok(LineSource {
-            readers,
-            idx: 0,
-            buf: vec![0u8; 1 << 16],
-            pos: 0,
-            filled: 0,
-            terminator,
-            carry: Vec::new(),
-        })
+        block.extend_from_slice(&tmp[..n]);
     }
+    // Hit the budget mid-stream: split after the last complete line.
+    loop {
+        if let Some(p) = memchr::memrchr(terminator, block) {
+            *carry = block.split_off(p + 1);
+            return Ok(false);
+        }
+        // No terminator yet (a single line exceeds the budget) — keep reading.
+        let n = r.read(&mut tmp)?;
+        if n == 0 {
+            return Ok(true);
+        }
+        block.extend_from_slice(&tmp[..n]);
+    }
+}
 
-    /// Return the next complete line (without terminator) as an owned Vec.
-    fn next_line(&mut self) -> io::Result<Option<Vec<u8>>> {
-        loop {
-            // Scan the live buffer region for a terminator.
-            if self.pos < self.filled {
-                if let Some(rel) = memchr::memchr(self.terminator, &self.buf[self.pos..self.filled])
-                {
-                    let end = self.pos + rel;
-                    let line = if self.carry.is_empty() {
-                        self.buf[self.pos..end].to_vec()
-                    } else {
-                        let mut v = std::mem::take(&mut self.carry);
-                        v.extend_from_slice(&self.buf[self.pos..end]);
-                        v
-                    };
-                    self.pos = end + 1;
-                    return Ok(Some(line));
-                } else {
-                    self.carry
-                        .extend_from_slice(&self.buf[self.pos..self.filled]);
-                    self.pos = self.filled;
-                }
-            }
-            // Refill.
-            if self.idx >= self.readers.len() {
-                if !self.carry.is_empty() {
-                    return Ok(Some(std::mem::take(&mut self.carry)));
-                }
-                return Ok(None);
-            }
-            self.filled = self.readers[self.idx].read(&mut self.buf)?;
-            self.pos = 0;
-            if self.filled == 0 {
-                // End of this reader; flush any carry as a final line.
-                self.idx += 1;
-                if !self.carry.is_empty() && self.idx >= self.readers.len() {
-                    return Ok(Some(std::mem::take(&mut self.carry)));
-                }
-            }
-        }
+/// Split a buffer of terminated lines into borrowed slices (terminators
+/// stripped). A final unterminated line is included.
+fn split_block(block: &[u8], terminator: u8) -> Vec<&[u8]> {
+    let mut lines = Vec::new();
+    let mut start = 0;
+    for i in memchr::memchr_iter(terminator, block) {
+        lines.push(&block[start..i]);
+        start = i + 1;
     }
+    if start < block.len() {
+        lines.push(&block[start..]);
+    }
+    lines
 }
 
 /// Run the external sort, writing sorted output. Returns `(lines, chunks)`
-/// where `chunks` is the number of sorted runs spilled to temp files (1 means
-/// everything fit in a single in-memory chunk; > 1 means the input genuinely
-/// spilled and was k-way merged).
+/// where `chunks` is the number of sorted runs (1 means everything fit in a
+/// single chunk and was written directly; > 1 means the input genuinely
+/// spilled to temp files and was k-way merged).
+///
+/// Each chunk is read as one block of zero-copy line slices and sorted in
+/// parallel (rayon); only when the input exceeds the budget do we spill and
+/// merge — a single chunk streams straight to the output with no temp files.
 pub fn run_external(
     cfg: &Config,
     sorter: &Sorter,
     budget: usize,
     terminator: u8,
 ) -> io::Result<(usize, usize)> {
-    let mut src = LineSource::new(cfg, terminator)?;
-    let mut runs: Vec<NamedTempFile> = Vec::new();
-    let mut chunk: Vec<Vec<u8>> = Vec::new();
-    let mut chunk_bytes = 0usize;
-    let mut total = 0usize;
-
+    let mut reader = open_input(cfg)?;
     let temp_dir = cfg.temp_dirs.first().cloned();
+    let stable = cfg.stable || cfg.unique;
 
-    while let Some(line) = src.next_line()? {
-        chunk_bytes += line.len() + 1;
-        chunk.push(line);
-        total += 1;
-        if chunk_bytes >= budget {
-            spill(&mut chunk, sorter, cfg, terminator, &temp_dir, &mut runs)?;
-            chunk_bytes = 0;
+    let mut out: Box<dyn Write> = match &cfg.output {
+        Some(p) => Box::new(BufWriter::with_capacity(IO_BUF, File::create(p)?)),
+        None => Box::new(BufWriter::with_capacity(IO_BUF, io::stdout().lock())),
+    };
+
+    let mut runs: Vec<NamedTempFile> = Vec::new();
+    let mut total = 0usize;
+    let mut carry: Vec<u8> = Vec::new();
+    let mut block: Vec<u8> = Vec::with_capacity(budget.min(1 << 26) + IO_BUF);
+
+    loop {
+        let eof = read_block(&mut *reader, budget, terminator, &mut carry, &mut block)?;
+        if block.is_empty() {
+            break;
+        }
+        let mut lines = split_block(&block, terminator);
+        total += lines.len();
+        if stable {
+            lines.par_sort_by(|a, b| sorter.compare(a, b));
+        } else {
+            lines.par_sort_unstable_by(|a, b| sorter.compare(a, b));
+        }
+
+        // Single chunk that reached EOF on the first read: write directly,
+        // skipping the temp-file round trip entirely.
+        if eof && runs.is_empty() {
+            write_lines(&mut out, &lines, terminator)?;
+            out.flush()?;
+            return Ok((total, 1));
+        }
+
+        runs.push(spill(&lines, terminator, &temp_dir)?);
+        if eof {
+            break;
         }
     }
-    if !chunk.is_empty() {
-        spill(&mut chunk, sorter, cfg, terminator, &temp_dir, &mut runs)?;
-    }
 
-    // Merge the runs to the output.
-    let out: Box<dyn Write> = match &cfg.output {
-        Some(p) => Box::new(BufWriter::new(File::create(p)?)),
-        None => Box::new(BufWriter::new(io::stdout().lock())),
-    };
     let chunks = runs.len();
     merge_runs(runs, sorter, cfg, terminator, out)?;
     Ok((total, chunks))
 }
 
+fn write_lines(w: &mut dyn Write, lines: &[&[u8]], terminator: u8) -> io::Result<()> {
+    for line in lines {
+        w.write_all(line)?;
+        w.write_all(std::slice::from_ref(&terminator))?;
+    }
+    Ok(())
+}
+
+/// Write one sorted run to a temp file and hand back its handle.
 fn spill(
-    chunk: &mut Vec<Vec<u8>>,
-    sorter: &Sorter,
-    cfg: &Config,
+    lines: &[&[u8]],
     terminator: u8,
     temp_dir: &Option<std::path::PathBuf>,
-    runs: &mut Vec<NamedTempFile>,
-) -> io::Result<()> {
-    if cfg.stable || cfg.unique {
-        chunk.sort_by(|a, b| sorter.compare(a, b));
-    } else {
-        chunk.sort_unstable_by(|a, b| sorter.compare(a, b));
-    }
+) -> io::Result<NamedTempFile> {
     let mut tf = match temp_dir {
         Some(d) => NamedTempFile::new_in(d)?,
         None => NamedTempFile::new()?,
     };
     {
-        let mut w = BufWriter::new(tf.as_file_mut());
-        for line in chunk.iter() {
-            w.write_all(line)?;
-            w.write_all(std::slice::from_ref(&terminator))?;
-        }
+        let mut w = BufWriter::with_capacity(IO_BUF, tf.as_file_mut());
+        write_lines(&mut w, lines, terminator)?;
         w.flush()?;
     }
-    runs.push(tf);
-    chunk.clear();
-    Ok(())
+    Ok(tf)
 }
 
 /// A run cursor in the merge heap, ordered by its current head line.
@@ -240,7 +252,7 @@ fn merge_runs(
     for tf in &runs {
         let file = tf.reopen()?;
         let mut cur = Cursor {
-            reader: BufReader::new(file),
+            reader: BufReader::with_capacity(IO_BUF, file),
             head: Vec::new(),
             sorter,
             terminator,
