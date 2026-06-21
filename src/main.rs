@@ -30,9 +30,13 @@ fn main() -> ExitCode {
     match xort::run(&cfg) {
         Ok(outcome) => {
             if let Some(s) = outcome.stats {
+                let spill = match s.chunks {
+                    Some(c) => format!(", {c} spilled chunk(s)"),
+                    None => String::new(),
+                };
                 eprintln!(
-                    "xort: {} in, {} out, {} duplicate(s) removed, {:.3}s",
-                    s.lines_in, s.lines_out, s.duplicates_removed, s.elapsed_secs
+                    "xort: {} in, {} out, {} duplicate(s) removed{}, {:.3}s",
+                    s.lines_in, s.lines_out, s.duplicates_removed, spill, s.elapsed_secs
                 );
             }
             ExitCode::from(outcome.exit_code as u8)

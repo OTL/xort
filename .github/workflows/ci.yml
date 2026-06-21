@@ -31,6 +31,24 @@ jobs:
           cargo build --release
           bash scripts/difftest.sh
 
+  bench-smoke:
+    name: benchmark script (QUICK smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install hyperfine
+        run: |
+          wget -q https://github.com/sharkdp/hyperfine/releases/download/v1.20.0/hyperfine_1.20.0_amd64.deb
+          sudo dpkg -i hyperfine_1.20.0_amd64.deb
+      - name: Build release
+        run: cargo build --release
+      # QUICK=1 keeps it fast; this asserts the correctness gates inside the
+      # script pass — it does NOT assert timings (too noisy on CI runners).
+      - name: Run benchmark suite (QUICK)
+        run: QUICK=1 RUNS=2 bash scripts/benchmark.sh
+
   coverage:
     name: coverage (>= 80%)
     runs-on: ubuntu-latest

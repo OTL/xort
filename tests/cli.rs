@@ -505,3 +505,49 @@ fn external_from_stdin() {
     // -S with stdin exercises the streaming LineSource over stdin.
     assert_eq!(run(&["-n", "-S", "16"], "30\n10\n20\n"), "10\n20\n30\n");
 }
+
+// --- M5/bench: --stats reports spilled chunks on the external path ----------
+
+/// Run capturing stderr too (the helper above discards it).
+fn xort_stderr(args: &[&str], stdin: &[u8]) -> (Vec<u8>, Vec<u8>, i32) {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_xort"))
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn xort");
+    let _ = child.stdin.take().unwrap().write_all(stdin);
+    let out = child.wait_with_output().expect("wait");
+    (out.stdout, out.stderr, out.status.code().unwrap_or(-1))
+}
+
+#[test]
+fn stats_reports_spilled_chunks_when_external() {
+    // Many lines + a tiny buffer forces multiple spilled runs.
+    let mut input = String::new();
+    for i in (0..20000).rev() {
+        input.push_str(&i.to_string());
+        input.push('\n');
+    }
+    let (out, err, code) = xort_stderr(&["-n", "-S", "16K", "--stats"], input.as_bytes());
+    assert_eq!(code, 0);
+    assert_eq!(&out[..6], b"0\n1\n2\n"); // sorted ascending
+    let err = String::from_utf8(err).unwrap();
+    assert!(err.contains("spilled chunk(s)"), "stderr was: {err}");
+    // Extract the chunk count and assert it actually spilled (> 1).
+    let n: usize = err
+        .split(", ")
+        .find_map(|s| s.strip_suffix(" spilled chunk(s)"))
+        .and_then(|s| s.parse().ok())
+        .expect("chunk count in stats");
+    assert!(n > 1, "expected multiple spilled chunks, got {n}");
+}
+
+#[test]
+fn stats_no_chunks_for_in_memory() {
+    let (_, err, code) = xort_stderr(&["-n", "--stats"], b"3\n1\n2\n");
+    assert_eq!(code, 0);
+    let err = String::from_utf8(err).unwrap();
+    assert!(!err.contains("spilled chunk"), "stderr was: {err}");
+}

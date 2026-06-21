@@ -189,6 +189,7 @@ fn run_csv(cfg: &Config, start: Instant) -> io::Result<Outcome> {
         lines_in,
         lines_out,
         duplicates_removed: lines_in.saturating_sub(lines_out),
+        chunks: None,
         elapsed_secs: start.elapsed().as_secs_f64(),
     });
     Ok(Outcome {
@@ -334,6 +335,7 @@ fn run_json(cfg: &Config, start: Instant, lines_mode: bool) -> io::Result<Outcom
         lines_in,
         lines_out,
         duplicates_removed: lines_in.saturating_sub(lines_out),
+        chunks: None,
         elapsed_secs: start.elapsed().as_secs_f64(),
     });
     Ok(Outcome {

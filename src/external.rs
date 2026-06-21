@@ -118,13 +118,16 @@ impl LineSource {
     }
 }
 
-/// Run the external sort, writing sorted output. Returns the line count.
+/// Run the external sort, writing sorted output. Returns `(lines, chunks)`
+/// where `chunks` is the number of sorted runs spilled to temp files (1 means
+/// everything fit in a single in-memory chunk; > 1 means the input genuinely
+/// spilled and was k-way merged).
 pub fn run_external(
     cfg: &Config,
     sorter: &Sorter,
     budget: usize,
     terminator: u8,
-) -> io::Result<usize> {
+) -> io::Result<(usize, usize)> {
     let mut src = LineSource::new(cfg, terminator)?;
     let mut runs: Vec<NamedTempFile> = Vec::new();
     let mut chunk: Vec<Vec<u8>> = Vec::new();
@@ -151,8 +154,9 @@ pub fn run_external(
         Some(p) => Box::new(BufWriter::new(File::create(p)?)),
         None => Box::new(BufWriter::new(io::stdout().lock())),
     };
+    let chunks = runs.len();
     merge_runs(runs, sorter, cfg, terminator, out)?;
-    Ok(total)
+    Ok((total, chunks))
 }
 
 fn spill(

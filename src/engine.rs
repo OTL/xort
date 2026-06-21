@@ -26,6 +26,9 @@ pub struct Stats {
     pub lines_out: usize,
     /// Lines removed by `-u`/grouping.
     pub duplicates_removed: usize,
+    /// Number of spilled sorted runs when the external (>RAM) path ran;
+    /// `None` for the in-memory paths. `> 1` means the input actually spilled.
+    pub chunks: Option<usize>,
     /// Wall-clock time elapsed.
     pub elapsed_secs: f64,
 }
@@ -55,11 +58,12 @@ pub fn run(cfg: &Config) -> io::Result<Outcome> {
         if !cfg.merge && !cfg.check && cfg.top.is_none() && !cfg.count && !cfg.header {
             let budget = crate::external::parse_size(size).map_err(invalid)?;
             let sorter = cfg.build_sorter().map_err(invalid)?;
-            let n = crate::external::run_external(cfg, &sorter, budget, terminator)?;
+            let (n, chunks) = crate::external::run_external(cfg, &sorter, budget, terminator)?;
             let stats = cfg.stats.then(|| Stats {
                 lines_in: n,
                 lines_out: n,
                 duplicates_removed: 0,
+                chunks: Some(chunks),
                 elapsed_secs: start.elapsed().as_secs_f64(),
             });
             return Ok(Outcome {
@@ -82,6 +86,7 @@ pub fn run(cfg: &Config) -> io::Result<Outcome> {
             lines_in,
             lines_out: ordered.len(),
             duplicates_removed: dups,
+            chunks: None,
             elapsed_secs: start.elapsed().as_secs_f64(),
         });
         return Ok(Outcome {
@@ -121,6 +126,7 @@ pub fn run(cfg: &Config) -> io::Result<Outcome> {
             lines_in,
             lines_out,
             duplicates_removed: lines_in.saturating_sub(lines_out),
+            chunks: None,
             elapsed_secs: start.elapsed().as_secs_f64(),
         });
         return Ok(Outcome {
@@ -150,6 +156,7 @@ pub fn run(cfg: &Config) -> io::Result<Outcome> {
         lines_in,
         lines_out: ordered.len(),
         duplicates_removed,
+        chunks: None,
         elapsed_secs: start.elapsed().as_secs_f64(),
     });
     Ok(Outcome {
