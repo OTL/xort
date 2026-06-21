@@ -167,6 +167,191 @@ pub fn numeric_cmp(a: &[u8], b: &[u8]) -> Ordering {
     NumericKey::parse(a).cmp(&NumericKey::parse(b))
 }
 
+/// General numeric comparison (`-g`): parse a leading float (incl. exponent)
+/// and compare as `f64`. Unparseable input is treated as the smallest value
+/// (sorts first), which matches GNU's handling of non-numbers under `-g`.
+pub fn general_cmp(a: &[u8], b: &[u8]) -> Ordering {
+    let fa = parse_f64(a);
+    let fb = parse_f64(b);
+    match (fa, fb) {
+        (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(Ordering::Equal),
+        (Some(_), None) => Ordering::Greater,
+        (None, Some(_)) => Ordering::Less,
+        (None, None) => Ordering::Equal,
+    }
+}
+
+fn parse_f64(s: &[u8]) -> Option<f64> {
+    let s = trim_blanks(s);
+    // Find the longest leading prefix that parses as a float.
+    let mut end = 0;
+    let bytes = s;
+    // optional sign
+    if end < bytes.len() && (bytes[end] == b'+' || bytes[end] == b'-') {
+        end += 1;
+    }
+    let mut seen_digit = false;
+    while end < bytes.len() && bytes[end].is_ascii_digit() {
+        end += 1;
+        seen_digit = true;
+    }
+    if end < bytes.len() && bytes[end] == b'.' {
+        end += 1;
+        while end < bytes.len() && bytes[end].is_ascii_digit() {
+            end += 1;
+            seen_digit = true;
+        }
+    }
+    if seen_digit && end < bytes.len() && (bytes[end] == b'e' || bytes[end] == b'E') {
+        let mut e = end + 1;
+        if e < bytes.len() && (bytes[e] == b'+' || bytes[e] == b'-') {
+            e += 1;
+        }
+        let mut exp_digit = false;
+        while e < bytes.len() && bytes[e].is_ascii_digit() {
+            e += 1;
+            exp_digit = true;
+        }
+        if exp_digit {
+            end = e;
+        }
+    }
+    if !seen_digit {
+        return None;
+    }
+    std::str::from_utf8(&bytes[..end]).ok()?.parse::<f64>().ok()
+}
+
+#[inline]
+fn trim_blanks(s: &[u8]) -> &[u8] {
+    skip_blanks(s)
+}
+
+/// Human-readable size comparison (`-h`): a leading number with an optional
+/// SI/IEC suffix (K, M, G, T, P, E, Z, Y) scaled in powers of 1024, matching
+/// GNU `sort -h`.
+pub fn human_cmp(a: &[u8], b: &[u8]) -> Ordering {
+    human_value(a)
+        .partial_cmp(&human_value(b))
+        .unwrap_or(Ordering::Equal)
+}
+
+fn human_value(s: &[u8]) -> f64 {
+    let s = trim_blanks(s);
+    let base = match parse_f64(s) {
+        Some(v) => v,
+        None => return 0.0,
+    };
+    // Locate the suffix character after the numeric prefix.
+    let mut i = 0;
+    if i < s.len() && (s[i] == b'+' || s[i] == b'-') {
+        i += 1;
+    }
+    while i < s.len() && (s[i].is_ascii_digit() || s[i] == b'.') {
+        i += 1;
+    }
+    let exp = match s.get(i) {
+        Some(b'K') | Some(b'k') => 1,
+        Some(b'M') => 2,
+        Some(b'G') => 3,
+        Some(b'T') => 4,
+        Some(b'P') => 5,
+        Some(b'E') => 6,
+        Some(b'Z') => 7,
+        Some(b'Y') => 8,
+        _ => 0,
+    };
+    base * 1024f64.powi(exp)
+}
+
+/// Month comparison (`-M`): unknown < JAN < ... < DEC.
+pub fn month_cmp(a: &[u8], b: &[u8]) -> Ordering {
+    month_num(a).cmp(&month_num(b))
+}
+
+fn month_num(s: &[u8]) -> u8 {
+    let s = trim_blanks(s);
+    if s.len() < 3 {
+        return 0;
+    }
+    let m = [
+        s[0].to_ascii_uppercase(),
+        s[1].to_ascii_uppercase(),
+        s[2].to_ascii_uppercase(),
+    ];
+    match &m {
+        b"JAN" => 1,
+        b"FEB" => 2,
+        b"MAR" => 3,
+        b"APR" => 4,
+        b"MAY" => 5,
+        b"JUN" => 6,
+        b"JUL" => 7,
+        b"AUG" => 8,
+        b"SEP" => 9,
+        b"OCT" => 10,
+        b"NOV" => 11,
+        b"DEC" => 12,
+        _ => 0,
+    }
+}
+
+/// Version comparison (`-V`): natural ordering of mixed letter/number runs,
+/// so `v2 < v10` and `1.9 < 1.10`. A pragmatic `strverscmp`-style algorithm.
+pub fn version_cmp(a: &[u8], b: &[u8]) -> Ordering {
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() && j < b.len() {
+        let (ca, cb) = (a[i], b[j]);
+        if ca.is_ascii_digit() && cb.is_ascii_digit() {
+            // Compare two digit runs numerically (ignoring leading zeros).
+            let si = i;
+            while i < a.len() && a[i].is_ascii_digit() {
+                i += 1;
+            }
+            let sj = j;
+            while j < b.len() && b[j].is_ascii_digit() {
+                j += 1;
+            }
+            let da = strip_leading_zeros(&a[si..i]);
+            let db = strip_leading_zeros(&b[sj..j]);
+            match cmp_int(da, db) {
+                Ordering::Equal => {}
+                other => return other,
+            }
+        } else {
+            match ca.cmp(&cb) {
+                Ordering::Equal => {
+                    i += 1;
+                    j += 1;
+                }
+                other => return other,
+            }
+        }
+    }
+    (a.len() - i).cmp(&(b.len() - j))
+}
+
+/// Dispatch a key comparison to the right discipline. `fold` applies to byte
+/// comparison only (matching GNU, where `-f` affects ordering of text keys).
+#[inline]
+pub fn compare_kind(a: &[u8], b: &[u8], kind: crate::key::Kind, fold: bool) -> Ordering {
+    use crate::key::Kind;
+    match kind {
+        Kind::Numeric => numeric_cmp(a, b),
+        Kind::General => general_cmp(a, b),
+        Kind::Human => human_cmp(a, b),
+        Kind::Version => version_cmp(a, b),
+        Kind::Month => month_cmp(a, b),
+        Kind::Bytes => {
+            if fold {
+                fold_cmp(a, b)
+            } else {
+                a.cmp(b)
+            }
+        }
+    }
+}
+
 /// Case-folded byte comparison (`-f`): ASCII lower case folds to upper case.
 fn fold_cmp(a: &[u8], b: &[u8]) -> Ordering {
     let n = a.len().min(b.len());

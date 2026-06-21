@@ -1,4 +1,4 @@
-//! fsort — a fast, modern, parallel replacement for the Unix `sort` command.
+//! xort — a fast, modern, parallel replacement for the Unix `sort` command.
 //!
 //! Library surface so the binary stays thin and the engine is unit/integration
 //! testable. The module layout mirrors the project plan; milestone 1 implements
@@ -8,7 +8,9 @@ pub mod cli;
 pub mod compare;
 pub mod config;
 pub mod engine;
+pub mod external;
 pub mod input;
+pub mod key;
 
 pub use config::Config;
 pub use engine::{run, Outcome, Stats};

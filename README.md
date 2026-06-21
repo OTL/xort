@@ -1,8 +1,8 @@
-# fsort
+# xort
 
 **A fast, modern, parallel drop-in replacement for the Unix `sort` command.**
 
-`fsort` aims to be to `sort` what [ripgrep] is to `grep` and [fd] is to `find`:
+`xort` aims to be to `sort` what [ripgrep] is to `grep` and [fd] is to `find`:
 compatible enough to drop into your existing scripts and muscle memory, but
 **parallel by default**, measurably faster, and with a few things the classic
 tool simply can't do.
@@ -17,7 +17,7 @@ tool simply can't do.
 ## Why
 
 GNU `sort` leaves performance on the table — historically single-threaded, and
-it pays a heavy Unicode-collation cost in non-`C` locales. `fsort` is parallel
+it pays a heavy Unicode-collation cost in non-`C` locales. `xort` is parallel
 by default and compares bytes by default (equivalent to `LC_ALL=C`), which is
 both fast and predictable.
 
@@ -27,7 +27,7 @@ tools run under `LC_ALL=C` and use all cores** — we deliberately do *not*
 exploit GNU sort's much larger slowdown in a UTF-8 locale. Output is verified
 **byte-identical** to GNU in every case.
 
-| Workload (input) | GNU sort | fsort | Speedup |
+| Workload (input) | GNU sort | xort | Speedup |
 |---|---:|---:|---:|
 | Numeric, 10M ints (`-n`) | 4.81 s | **2.03 s** | **2.37×** |
 | Float, 10M decimals (`-n`) | 4.92 s | **2.32 s** | **2.12×** |
@@ -48,10 +48,10 @@ cargo install --path .   # from a checkout
 
 ## Usage
 
-`fsort` accepts the common GNU `sort` flags:
+`xort` accepts the common GNU `sort` flags:
 
 ```
-fsort [FILE...]            sort lines of text (stdin if no files)
+xort [FILE...]            sort lines of text (stdin if no files)
 
   -n, --numeric-sort       compare by leading numeric value
   -r, --reverse            reverse the result
@@ -64,7 +64,7 @@ fsort [FILE...]            sort lines of text (stdin if no files)
   -o, --output=FILE        write result to FILE
       --parallel=N         use N threads
 
-New in fsort:
+New in xort:
       --top=N              emit only the first N lines in sort order, using a
                            bounded selection instead of a full sort + head
       --stats              print line counts and elapsed time to stderr
@@ -73,17 +73,17 @@ New in fsort:
 ### Examples
 
 ```sh
-fsort -n data.txt                 # numeric sort
-fsort -u names.txt                # sorted unique
-fsort -n --top 10 metrics.txt     # 10 smallest, far cheaper than sort | head
-du -b * | fsort -n --top 5        # 5 largest, etc.
+xort -n data.txt                 # numeric sort
+xort -u names.txt                # sorted unique
+xort -n --top 10 metrics.txt     # 10 smallest, far cheaper than sort | head
+du -b * | xort -n --top 5        # 5 largest, etc.
 ```
 
 ## Compatibility
 
-`fsort`'s default ordering is a byte comparison (`LC_ALL=C` semantics), so its
+`xort`'s default ordering is a byte comparison (`LC_ALL=C` semantics), so its
 output matches `LC_ALL=C sort`. The differential test
-([`scripts/difftest.sh`](scripts/difftest.sh)) checks `fsort` against GNU `sort`
+([`scripts/difftest.sh`](scripts/difftest.sh)) checks `xort` against GNU `sort`
 across random word/number inputs and flag combinations.
 
 ## Roadmap

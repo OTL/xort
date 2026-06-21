@@ -33,6 +33,36 @@ pub fn read_all(files: &[PathBuf], terminator: u8) -> io::Result<Vec<u8>> {
     Ok(buf)
 }
 
+/// Read each input into its own buffer (used by `-m` merge so files stay
+/// separate). Empty file list reads stdin as a single buffer.
+pub fn read_each(files: &[PathBuf], terminator: u8) -> io::Result<Vec<Vec<u8>>> {
+    if files.is_empty() {
+        let mut buf = Vec::new();
+        io::stdin().lock().read_to_end(&mut buf)?;
+        ensure_terminated(&mut buf, terminator);
+        return Ok(vec![buf]);
+    }
+    let mut out = Vec::with_capacity(files.len());
+    for path in files {
+        let mut buf = Vec::new();
+        if path.as_os_str() == "-" {
+            io::stdin().lock().read_to_end(&mut buf)?;
+        } else {
+            read_file(path, &mut buf)?;
+        }
+        ensure_terminated(&mut buf, terminator);
+        out.push(buf);
+    }
+    Ok(out)
+}
+
+#[inline]
+fn ensure_terminated(buf: &mut Vec<u8>, terminator: u8) {
+    if !buf.is_empty() && *buf.last().unwrap() != terminator {
+        buf.push(terminator);
+    }
+}
+
 fn read_file(path: &Path, buf: &mut Vec<u8>) -> io::Result<()> {
     let mut f = File::open(path)
         .map_err(|e| io::Error::new(e.kind(), format!("{}: {}", path.display(), e)))?;

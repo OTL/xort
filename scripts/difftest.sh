@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Differential test: compare fsort output against GNU sort across random inputs
-# and flag combinations. fsort uses byte ordering (LC_ALL=C), so we pin GNU sort
+# Differential test: compare xort output against GNU sort across random inputs
+# and flag combinations. xort uses byte ordering (LC_ALL=C), so we pin GNU sort
 # to the C locale for a fair comparison.
 set -u
-FSORT="${FSORT:-./target/release/fsort}"
+XORT="${XORT:-./target/release/xort}"
 export LC_ALL=C
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -28,13 +28,44 @@ gen_nums() { # random ints/floats incl. negatives and junk
     }
   }'
 }
+gen_table() { # CSV-ish rows with several typed columns, space and colon variants
+  awk -v n="$1" 'BEGIN{
+    srand(11+n);
+    names[0]="alice";names[1]="bob";names[2]="carol";names[3]="dave";
+    mon[0]="Jan";mon[1]="Mar";mon[2]="Feb";mon[3]="Dec";mon[4]="Aug";
+    for(i=0;i<n;i++){
+      a=names[int(rand()*4)]; b=int(rand()*1000)-500;
+      c=mon[int(rand()*5)]; d=int(rand()*100);
+      print a" "b" "c" "d;
+    }
+  }'
+}
+gen_table_colon() {
+  awk -v n="$1" 'BEGIN{
+    srand(13+n);
+    names[0]="alice";names[1]="bob";names[2]="carol";names[3]="dave";
+    for(i=0;i<n;i++){ print names[int(rand()*4)]":"int(rand()*1000)-500":"int(rand()*100) }
+  }'
+}
+gen_versions() {
+  awk -v n="$1" 'BEGIN{
+    srand(17+n);
+    for(i=0;i<n;i++){ printf "v%d.%d.%d\n", int(rand()*12), int(rand()*20), int(rand()*30) }
+  }'
+}
+gen_human() {
+  awk -v n="$1" 'BEGIN{
+    srand(19+n); s[0]="K";s[1]="M";s[2]="G";s[3]="";s[4]="T";
+    for(i=0;i<n;i++){ printf "%d%s\n", int(rand()*900)+1, s[int(rand()*5)] }
+  }'
+}
 
 fail=0; total=0
 check() { # $1 = description; rest = flags
   local desc="$1"; shift
   total=$((total+1))
   out_g=$(sort "$@" "$input" 2>/dev/null)
-  out_f=$("$FSORT" "$@" "$input" 2>/dev/null)
+  out_f=$("$XORT" "$@" "$input" 2>/dev/null)
   if [ "$out_g" != "$out_f" ]; then
     fail=$((fail+1))
     echo "MISMATCH [$desc] flags: $*"
@@ -57,6 +88,31 @@ for size in 0 1 5 50 500; do
   check "nums -n n=$size"      -n
   check "nums -nr n=$size"     -n -r
   check "nums -nu n=$size"     -n -u
+  check "nums -g n=$size"      -g
+
+  # -k / -t field keys (whitespace-separated table)
+  input="$tmp/table.$size"; gen_table "$size" > "$input"
+  check "table -k1 n=$size"       -k1
+  check "table -k2,2n n=$size"    -k2,2n
+  check "table -k2n n=$size"      -k2n
+  check "table -k1,1 -k2n"        -k1,1 -k2n
+  check "table -k3,3M n=$size"    -k3,3M
+  check "table -k4,4nr n=$size"   -k4,4nr
+  check "table -k1.2 n=$size"     -k1.2
+  check "table -k2,2 -u"          -k2,2 -u
+  check "table -s -k1,1"          -s -k1,1
+
+  # colon-delimited with -t
+  input="$tmp/colon.$size"; gen_table_colon "$size" > "$input"
+  check "colon -t: -k2,2n"        -t: -k2,2n
+  check "colon -t: -k1,1"         -t: -k1,1
+  check "colon -t: -k2,2nr -u"    -t: -k2,2nr -u
+
+  # version & human
+  input="$tmp/ver.$size"; gen_versions "$size" > "$input"
+  check "versions -V n=$size"     -V
+  input="$tmp/hum.$size"; gen_human "$size" > "$input"
+  check "human -h n=$size"        -h
 done
 
 echo "=== $((total-fail))/$total passed ==="

@@ -1,5 +1,5 @@
 [package]
-name = "fsort"
+name = "xort"
 version = "0.1.0"
 edition = "2021"
 description = "A fast, modern, parallel drop-in replacement for the Unix sort command"
@@ -10,17 +10,18 @@ keywords = ["sort", "cli", "coreutils", "parallel", "performance"]
 categories = ["command-line-utilities"]
 
 [[bin]]
-name = "fsort"
+name = "xort"
 path = "src/main.rs"
 
 [lib]
-name = "fsort"
+name = "xort"
 path = "src/lib.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 memchr = "2"
 rayon = "1"
+tempfile = "3.27.0"
 
 [profile.release]
 lto = "thin"
