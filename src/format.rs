@@ -51,39 +51,62 @@ fn parse_csv_keys(cfg: &Config, headers: Option<&csv::ByteRecord>) -> Result<Vec
     cfg.keys
         .iter()
         .map(|spec| {
-            let token = spec.split(',').next().unwrap_or(spec);
-            if token.as_bytes().first().is_some_and(|b| b.is_ascii_digit()) {
-                // numeric column index with inline options, like text `-k`
-                let i = token
+            // A key is `F[opts][,F[opts]]`; the first field names the column
+            // (by index or, for CSV/TSV, by header name).
+            let (start, end) = match spec.split_once(',') {
+                Some((s, e)) => (s, Some(e)),
+                None => (spec.as_str(), None),
+            };
+            if start.as_bytes().first().is_some_and(|b| b.is_ascii_digit()) {
+                // Numeric column index, mirroring the text `-k` grammar: gather
+                // option letters from BOTH fields, and — when the key carries
+                // none — inherit the global type/case/reverse flags (GNU's
+                // all-or-nothing inheritance). Previously only the start field's
+                // inline options were read, so `-k2 -n` and `-k2,2n` lost their
+                // numeric ordering.
+                let si = start
                     .find(|c: char| !c.is_ascii_digit())
-                    .unwrap_or(token.len());
-                let n: usize = token[..i]
+                    .unwrap_or(start.len());
+                let n: usize = start[..si]
                     .parse()
-                    .map_err(|_| format!("invalid column index '{token}'"))?;
+                    .map_err(|_| format!("invalid column index '{start}'"))?;
                 if n == 0 {
-                    return Err(format!("column index is zero in '{token}'"));
+                    return Err(format!("column index is zero in '{start}'"));
                 }
-                let opts = &token[i..];
+                let eopts = match end {
+                    Some(e) => &e[e.find(|c: char| !c.is_ascii_digit()).unwrap_or(e.len())..],
+                    None => "",
+                };
+                let opts = format!("{}{}", &start[si..], eopts);
+                let (kind, fold, reverse) = if opts.is_empty() {
+                    (cfg.global_kind(), cfg.fold_case, cfg.reverse)
+                } else {
+                    (
+                        key::kind_from_opts(&opts),
+                        opts.contains('f'),
+                        opts.contains('r'),
+                    )
+                };
                 Ok(ColKey {
                     col: Some(n - 1),
-                    kind: key::kind_from_opts(opts),
-                    fold: opts.contains('f'),
-                    reverse: opts.contains('r'),
+                    kind,
+                    fold,
+                    reverse,
                 })
             } else {
                 // column name; type/order come from global flags
                 let headers = headers.ok_or_else(|| {
-                    format!("column name '{token}' requires --header for CSV/TSV")
+                    format!("column name '{start}' requires --header for CSV/TSV")
                 })?;
                 let col = headers
                     .iter()
-                    .position(|h| h == token.as_bytes())
+                    .position(|h| h == start.as_bytes())
                     .ok_or_else(|| {
                         let names: Vec<String> = headers
                             .iter()
                             .map(|h| String::from_utf8_lossy(h).into_owned())
                             .collect();
-                        format!("no column named '{token}'; available: {}", names.join(", "))
+                        format!("no column named '{start}'; available: {}", names.join(", "))
                     })?;
                 Ok(ColKey {
                     col: Some(col),
@@ -272,7 +295,16 @@ fn parse_paths(cfg: &Config) -> Vec<Vec<String>> {
 
 fn run_json(cfg: &Config, start: Instant, lines_mode: bool) -> io::Result<Outcome> {
     let data = read_all(&cfg.files, b'\n')?;
+    // No `-k` path means "order by the whole value". Without this, `paths`
+    // would be empty: the comparator would treat every record as equal and,
+    // worse, `dedup_by`'s `all()` over an empty path list returns true for
+    // every adjacent pair, collapsing all records to one under `-u`.
     let paths = parse_paths(cfg);
+    let paths = if paths.is_empty() {
+        vec![Vec::new()]
+    } else {
+        paths
+    };
 
     let mut values: Vec<serde_json::Value> = if lines_mode {
         let mut v = Vec::new();

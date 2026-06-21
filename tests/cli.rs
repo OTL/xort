@@ -602,3 +602,44 @@ fn external_line_longer_than_buffer() {
     let out = run(&["-S", "100", "-"], &input);
     assert_eq!(out, format!("a\nb\n{big}\n"));
 }
+
+// --- regressions: structured-format key handling (Copilot review) ----------
+
+#[test]
+fn jsonl_no_key_unique_does_not_collapse() {
+    // No -k path means order by the whole value; -u must dedup only identical
+    // records, not collapse everything to one (regression: empty path list made
+    // dedup_by's all() vacuously true).
+    assert_eq!(
+        run(&["--jsonl", "-u"], "{\"x\":2}\n{\"x\":1}\n{\"x\":2}\n"),
+        "{\"x\":1}\n{\"x\":2}\n"
+    );
+}
+
+#[test]
+fn jsonl_no_key_sorts_by_whole_value() {
+    assert_eq!(
+        run(&["--jsonl"], "{\"x\":2}\n{\"x\":1}\n"),
+        "{\"x\":1}\n{\"x\":2}\n"
+    );
+}
+
+#[test]
+fn csv_column_index_inherits_global_numeric() {
+    // -k2 with global -n must compare column 2 numerically (regression: column
+    // index keys ignored the global type flag).
+    assert_eq!(
+        run(&["--csv", "--header", "-k2", "-n"], "n,v\na,10\nb,2\n"),
+        "n,v\nb,2\na,10\n"
+    );
+}
+
+#[test]
+fn csv_key_end_field_options_honored() {
+    // -k2,2n must apply the numeric option from the end field (regression: only
+    // the start token was parsed, so ,2n was ignored).
+    assert_eq!(
+        run(&["--csv", "--header", "-k2,2n"], "n,v\na,10\nb,2\n"),
+        "n,v\nb,2\na,10\n"
+    );
+}
