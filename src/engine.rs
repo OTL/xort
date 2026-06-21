@@ -2,13 +2,13 @@
 
 use crate::compare::{compare_key, compare_kind, full_compare, KeyOpts, NumericKey};
 use crate::config::Config;
-use crate::input::{read_all, read_each, split_lines};
+use crate::input::{read_all_with, read_each_with, split_lines};
 use crate::key::{extract, Kind, Sorter};
+use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use std::cmp::Ordering;
-use std::fs::File;
 use std::io::{self, BufWriter, Write};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Outcome of a run: the process exit code plus optional statistics.
 pub struct Outcome {
@@ -37,6 +37,74 @@ fn invalid(e: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, e)
 }
 
+/// Total byte size of all file inputs; `None` when stdin is involved (the
+/// length is then unknown, so the bar falls back to a spinner).
+fn input_total_bytes(files: &[std::path::PathBuf]) -> Option<u64> {
+    if files.is_empty() {
+        return None;
+    }
+    let mut total = 0u64;
+    for p in files {
+        if p.as_os_str() == "-" {
+            return None;
+        }
+        total += std::fs::metadata(p).ok()?.len();
+    }
+    Some(total)
+}
+
+/// Build the read-phase progress bar for a known (or unknown) total input size.
+/// Split out from [`make_progress`] so it is exercisable without a TTY.
+fn build_progress_bar(total: Option<u64>) -> ProgressBar {
+    let pb = match total {
+        Some(total) => {
+            let pb = ProgressBar::new(total);
+            pb.set_style(
+                ProgressStyle::with_template(
+                    "{spinner:.green} {bytes}/{total_bytes} ({percent}%) [{bar:30}] ETA {eta} {msg}",
+                )
+                .unwrap()
+                .progress_chars("=> "),
+            );
+            pb
+        }
+        None => {
+            let pb = ProgressBar::new_spinner();
+            pb.set_style(
+                ProgressStyle::with_template("{spinner:.green} {bytes} read {msg}").unwrap(),
+            );
+            pb
+        }
+    };
+    pb.set_message("reading");
+    pb
+}
+
+/// Build a read-phase progress bar when `--progress` is set and stderr is a
+/// terminal. Returns `None` otherwise (zero overhead on the common path).
+pub(crate) fn make_progress(cfg: &Config) -> Option<ProgressBar> {
+    if !crate::diag::progress_enabled(cfg) {
+        return None;
+    }
+    Some(build_progress_bar(input_total_bytes(&cfg.files)))
+}
+
+/// Switch a read bar to an indeterminate spinner for the sort/merge phase.
+fn progress_phase(pb: &Option<ProgressBar>, msg: &'static str) {
+    if let Some(pb) = pb {
+        pb.set_style(ProgressStyle::with_template("{spinner:.green} {msg}").unwrap());
+        pb.set_message(msg);
+        pb.enable_steady_tick(Duration::from_millis(100));
+    }
+}
+
+/// Clear the progress bar from stderr before any stats/diagnostics print.
+fn finish_progress(pb: &Option<ProgressBar>) {
+    if let Some(pb) = pb {
+        pb.finish_and_clear();
+    }
+}
+
 /// Execute the sort job described by `cfg`.
 pub fn run(cfg: &Config) -> io::Result<Outcome> {
     if let Some(n) = cfg.parallel {
@@ -58,8 +126,10 @@ pub fn run(cfg: &Config) -> io::Result<Outcome> {
         if !cfg.merge && !cfg.check && cfg.top.is_none() && !cfg.count && !cfg.header {
             let budget = crate::external::parse_size(size).map_err(invalid)?;
             let sorter = cfg.build_sorter().map_err(invalid)?;
+            let pb = make_progress(cfg);
             let (lines_in, lines_out, chunks) =
-                crate::external::run_external(cfg, &sorter, budget, terminator)?;
+                crate::external::run_external(cfg, &sorter, budget, terminator, pb.as_ref())?;
+            finish_progress(&pb);
             let stats = cfg.stats.then(|| Stats {
                 lines_in,
                 lines_out,
@@ -76,12 +146,15 @@ pub fn run(cfg: &Config) -> io::Result<Outcome> {
 
     // Merge: inputs are already sorted; k-way merge them.
     if cfg.merge {
+        let pb = make_progress(cfg);
         let sorter = cfg.build_sorter().map_err(invalid)?;
-        let buffers = read_each(&cfg.files, terminator)?;
+        let buffers = read_each_with(&cfg.files, terminator, pb.as_ref())?;
         let per_file: Vec<Vec<&[u8]>> =
             buffers.iter().map(|b| split_lines(b, terminator)).collect();
         let lines_in: usize = per_file.iter().map(|v| v.len()).sum();
+        progress_phase(&pb, "merging");
         let (ordered, dups) = merge_sorted(per_file, cfg, &sorter);
+        finish_progress(&pb);
         write_output(&ordered, cfg, terminator)?;
         let stats = cfg.stats.then(|| Stats {
             lines_in,
@@ -96,7 +169,8 @@ pub fn run(cfg: &Config) -> io::Result<Outcome> {
         });
     }
 
-    let data = read_all(&cfg.files, terminator)?;
+    let pb = make_progress(cfg);
+    let data = read_all_with(&cfg.files, terminator, pb.as_ref())?;
     let mut lines = split_lines(&data, terminator);
 
     // --header: peel off the first line, pin it on output.
@@ -108,6 +182,7 @@ pub fn run(cfg: &Config) -> io::Result<Outcome> {
     let lines_in = lines.len();
 
     if cfg.check {
+        finish_progress(&pb);
         let sorter = cfg.build_sorter().map_err(invalid)?;
         let code = check_sorted(&lines, cfg, &sorter);
         return Ok(Outcome {
@@ -119,8 +194,10 @@ pub fn run(cfg: &Config) -> io::Result<Outcome> {
     // Fused dedup + count (like `sort | uniq -c`): one line per equal-key group,
     // prefixed with its occurrence count.
     if cfg.count {
+        progress_phase(&pb, "sorting");
         let sorter = cfg.build_sorter().map_err(invalid)?;
         let groups = grouped_counts(lines, &sorter, cfg);
+        finish_progress(&pb);
         let lines_out = groups.len();
         write_counts(&groups, header, cfg, terminator)?;
         let stats = cfg.stats.then(|| Stats {
@@ -139,6 +216,7 @@ pub fn run(cfg: &Config) -> io::Result<Outcome> {
     // Built once; used for the general path and/or output key highlighting.
     let sorter = cfg.build_sorter().map_err(invalid)?;
 
+    progress_phase(&pb, "sorting");
     let (ordered, duplicates_removed) = if cfg.is_simple_global() {
         let opts = cfg.key_opts();
         if opts.numeric {
@@ -149,6 +227,7 @@ pub fn run(cfg: &Config) -> io::Result<Outcome> {
     } else {
         general_order(lines, cfg, &sorter)
     };
+    finish_progress(&pb);
 
     let highlight = crate::diag::color_stdout(cfg).then_some(&sorter);
     write_output_with_header(&ordered, header, cfg, terminator, highlight)?;
@@ -265,11 +344,26 @@ fn numeric_order<'a>(lines: Vec<&'a [u8]>, cfg: &Config) -> (Vec<&'a [u8]>, usiz
     (dec.into_iter().map(|(_, l)| l).collect(), dups)
 }
 
-/// A precomputed sort key: numeric keys are parsed once up front, everything
-/// else is kept as a zero-copy slice into the line.
+/// A precomputed sort key: numeric and date keys are parsed once up front,
+/// everything else is kept as a zero-copy slice into the line.
 enum Dec<'a> {
     Num(NumericKey<'a>),
+    /// Parsed timestamp in nanoseconds; `i128::MIN` marks an unparseable value
+    /// (which sorts first, matching `datetime_cmp`).
+    Date(i128),
     Slice(&'a [u8]),
+}
+
+/// Decorate a key's extracted bytes into a [`Dec`], parsing numeric/date keys
+/// once up front so comparisons are O(1). Shared by the single- and multi-key
+/// paths so the two cannot decorate inconsistently.
+#[inline]
+fn decorate(kb: &[u8], kind: Kind) -> Dec<'_> {
+    match kind {
+        Kind::Numeric => Dec::Num(NumericKey::parse(kb)),
+        Kind::DateTime => Dec::Date(crate::compare::parse_datetime(kb).unwrap_or(i128::MIN)),
+        _ => Dec::Slice(kb),
+    }
 }
 
 /// Single-key DSU fast path. The precomputed key is stored *inline* with the
@@ -291,6 +385,7 @@ fn single_key_order<'a>(
 
     let key_cmp = |a: &Dec<'a>, b: &Dec<'a>| match (a, b) {
         (Dec::Num(x), Dec::Num(y)) => x.cmp(y),
+        (Dec::Date(x), Dec::Date(y)) => x.cmp(y),
         (Dec::Slice(x), Dec::Slice(y)) => compare_kind(x, y, kind, fold),
         _ => Ordering::Equal, // unreachable: every line uses the same variant
     };
@@ -306,12 +401,7 @@ fn single_key_order<'a>(
         .into_par_iter()
         .map(|l| {
             let kb = extract(l, key, tab);
-            let d = if kind == Kind::Numeric {
-                Dec::Num(NumericKey::parse(kb))
-            } else {
-                Dec::Slice(kb)
-            };
-            (d, l)
+            (decorate(kb, kind), l)
         })
         .collect();
 
@@ -378,11 +468,7 @@ fn general_order<'a>(
         .map(|idx| {
             let key = &sorter.keys[idx % k];
             let kb = extract(lines[idx / k], key, tab);
-            if key.kind == Kind::Numeric {
-                Dec::Num(NumericKey::parse(kb))
-            } else {
-                Dec::Slice(kb)
-            }
+            decorate(kb, key.kind)
         })
         .collect();
 
@@ -390,6 +476,7 @@ fn general_order<'a>(
         for (j, &(kind, fold, rev)) in specs.iter().enumerate() {
             let mut o = match (&dec[ba + j], &dec[bb + j]) {
                 (Dec::Num(x), Dec::Num(y)) => x.cmp(y),
+                (Dec::Date(x), Dec::Date(y)) => x.cmp(y),
                 (Dec::Slice(x), Dec::Slice(y)) => compare_kind(x, y, kind, fold),
                 _ => Ordering::Equal, // unreachable: key j is the same variant for all lines
             };
@@ -527,7 +614,7 @@ fn write_counts(
         w.flush()
     };
     let sink: Box<dyn Write> = match &cfg.output {
-        Some(p) => Box::new(File::create(p)?),
+        Some(p) => crate::compress::create_output(p)?,
         None => Box::new(io::stdout().lock()),
     };
     write(BufWriter::new(sink))
@@ -557,8 +644,10 @@ fn write_output_with_header(
 ) -> io::Result<()> {
     match &cfg.output {
         Some(path) => {
-            let f = File::create(path)?;
-            write_lines(BufWriter::new(f), lines, header, terminator, highlight)
+            // Compress by output extension (stdout is never compressed); errors
+            // carry the path.
+            let w = crate::compress::create_output(path)?;
+            write_lines(BufWriter::new(w), lines, header, terminator, highlight)
         }
         None => {
             let stdout = io::stdout();
@@ -603,4 +692,53 @@ fn write_lines<W: Write>(
         }
     }
     w.flush()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_progress_bar, finish_progress, input_total_bytes, progress_phase};
+    use indicatif::ProgressDrawTarget;
+    use std::path::PathBuf;
+
+    /// A hidden bar so tests never draw to stderr.
+    fn hidden(total: Option<u64>) -> indicatif::ProgressBar {
+        let pb = build_progress_bar(total);
+        pb.set_draw_target(ProgressDrawTarget::hidden());
+        pb
+    }
+
+    #[test]
+    fn total_bytes_stdin_and_empty_are_none() {
+        assert_eq!(input_total_bytes(&[]), None); // stdin
+        assert_eq!(input_total_bytes(&[PathBuf::from("-")]), None); // explicit stdin
+        assert_eq!(input_total_bytes(&[PathBuf::from("/no/such/file")]), None);
+    }
+
+    #[test]
+    fn total_bytes_sums_real_files() {
+        let dir = std::env::temp_dir();
+        let p = dir.join(format!("xort_tb_{}", std::process::id()));
+        std::fs::write(&p, b"hello\n").unwrap();
+        assert_eq!(input_total_bytes(std::slice::from_ref(&p)), Some(6));
+        // A "-" anywhere makes the total unknown.
+        assert_eq!(input_total_bytes(&[p.clone(), PathBuf::from("-")]), None);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn progress_bar_both_styles_drive_and_clear() {
+        // Byte-total style.
+        let pb = hidden(Some(100));
+        pb.set_position(50);
+        progress_phase(&Some(pb.clone()), "sorting");
+        finish_progress(&Some(pb));
+        // Spinner style (unknown length).
+        let sp = hidden(None);
+        sp.inc(10);
+        progress_phase(&Some(sp.clone()), "merging");
+        finish_progress(&Some(sp));
+        // None is a no-op on both helpers.
+        progress_phase(&None, "sorting");
+        finish_progress(&None);
+    }
 }

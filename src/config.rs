@@ -23,6 +23,8 @@ pub struct Config {
     pub version: bool,
     /// `-M`: month sort.
     pub month: bool,
+    /// `--date-sort`: chronological timestamp sort.
+    pub date_sort: bool,
     /// `-u`: output only the first line of each equal-key run.
     pub unique: bool,
     /// `-s`: stable; keep input order among equal keys.
@@ -55,6 +57,8 @@ pub struct Config {
     pub parallel: Option<usize>,
     /// `--stats`: print a summary to stderr after sorting.
     pub stats: bool,
+    /// `--progress`: show a progress bar / ETA on stderr (TTY only).
+    pub progress: bool,
     /// Input/output structured format.
     pub format: Format,
     /// `--color`: when to colorize the sort key in output.
@@ -107,6 +111,7 @@ impl Config {
             && !self.human
             && !self.version
             && !self.month
+            && !self.date_sort
             && self.format == Format::Text
     }
 
@@ -132,6 +137,8 @@ impl Config {
             Kind::Version
         } else if self.month {
             Kind::Month
+        } else if self.date_sort {
+            Kind::DateTime
         } else {
             Kind::Bytes
         }

@@ -196,7 +196,7 @@ fn run_csv(cfg: &Config, start: Instant) -> io::Result<Outcome> {
     }
 
     let sink: Box<dyn Write> = match &cfg.output {
-        Some(p) => Box::new(std::fs::File::create(p)?),
+        Some(p) => crate::compress::create_output(p)?,
         None => Box::new(io::stdout().lock()),
     };
     let mut wtr = csv::WriterBuilder::new()
@@ -350,7 +350,7 @@ fn run_json(cfg: &Config, start: Instant, lines_mode: bool) -> io::Result<Outcom
     }
 
     let sink: Box<dyn Write> = match &cfg.output {
-        Some(p) => Box::new(std::fs::File::create(p)?),
+        Some(p) => crate::compress::create_output(p)?,
         None => Box::new(io::stdout().lock()),
     };
     let mut w = BufWriter::new(sink);

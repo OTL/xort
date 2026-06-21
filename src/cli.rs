@@ -47,6 +47,11 @@ pub struct Cli {
     #[arg(short = 'M', long = "month-sort")]
     pub month: bool,
 
+    /// Sort by parsed date/time (ISO-8601, Unix epoch, Apache/syslog logs).
+    /// Long-only: `-d` is reserved for GNU's dictionary-order.
+    #[arg(long = "date-sort")]
+    pub date_sort: bool,
+
     /// Output only the first of an equal run of lines.
     #[arg(short = 'u', long = "unique")]
     pub unique: bool,
@@ -135,6 +140,10 @@ pub struct Cli {
     #[arg(long = "stats")]
     pub stats: bool,
 
+    /// Show a progress bar / ETA on stderr (only when stderr is a terminal).
+    #[arg(long = "progress")]
+    pub progress: bool,
+
     /// Generate a shell completion script and exit.
     #[arg(long = "completions", value_name = "SHELL")]
     pub completions: Option<clap_complete::Shell>,
@@ -213,6 +222,7 @@ impl Cli {
             human: self.human,
             version: self.version_sort,
             month: self.month,
+            date_sort: self.date_sort,
             unique: self.unique,
             stable: self.stable,
             fold_case: self.fold_case,
@@ -229,6 +239,7 @@ impl Cli {
             header: self.header,
             parallel: self.parallel,
             stats: self.stats,
+            progress: self.progress,
             format,
             color,
         })

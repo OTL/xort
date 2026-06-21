@@ -102,13 +102,21 @@ New in xort:
       --count              with grouping, prefix each line with its count
                            (built-in `sort | uniq -c`)
       --header             keep the first line on top, exclude it from sorting
+      --date-sort          sort by parsed date/time (ISO-8601, Unix epoch,
+                           Apache/syslog logs); also a `-k` option letter `D`
       --csv / --tsv        parse quoted CSV/TSV; sort by column index or name
       --json / --jsonl     sort a JSON array / JSONL stream by a field path
       --color=WHEN         highlight the sort key (auto|always|never)
+      --progress           show a progress bar / ETA on stderr (TTY only)
       --stats              print line counts and elapsed time to stderr
       --completions=SHELL  print a shell completion script
       --man                print the man page
 ```
+
+Input compressed with **gzip** or **zstd** is decompressed transparently
+(detected by magic bytes, so file names need not match, and stdin works too),
+and output is compressed when `-o` names a `.gz`/`.zst` file — no piping
+through `gzip`/`zstd` required.
 
 ### Examples
 
@@ -122,6 +130,9 @@ xort -t: -k3,3n /etc/passwd           # sort by 3rd colon field, numeric
 xort --csv --header -k age -n people.csv   # CSV: sort by the "age" column
 cat events.jsonl | xort --jsonl -k .ts     # JSONL: sort by .ts field
 xort -n -S 256M huge.txt              # external merge sort for >RAM inputs
+xort -n big.txt.gz -o sorted.zst      # gzip in, zstd out, decided by extension
+xort --date-sort access.log           # order log lines chronologically
+xort -k1,1D --progress events.tsv     # date key on field 1, with a progress bar
 ```
 
 ## Compatibility

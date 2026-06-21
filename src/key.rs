@@ -22,6 +22,8 @@ pub enum Kind {
     Version,
     /// `-M`: month name ordering.
     Month,
+    /// `--date-sort` / key option `D`: chronological ordering of timestamps.
+    DateTime,
 }
 
 /// A single sort key. Field/char indices are 1-based, mirroring `-k` syntax.
@@ -82,7 +84,7 @@ pub struct GlobalOrder {
     pub reverse: bool,
 }
 
-/// Map the type letters in a `-k` option string (`nghVM`) to a [`Kind`].
+/// Map the type letters in a `-k` option string (`nghVMD`) to a [`Kind`].
 pub fn kind_from_opts(opts: &str) -> Kind {
     if opts.contains('n') {
         Kind::Numeric
@@ -94,13 +96,15 @@ pub fn kind_from_opts(opts: &str) -> Kind {
         Kind::Version
     } else if opts.contains('M') {
         Kind::Month
+    } else if opts.contains('D') {
+        Kind::DateTime
     } else {
         Kind::Bytes
     }
 }
 
 /// The ordering-option letters xort understands within a `-k` spec.
-const KEY_OPT_LETTERS: &str = "bfghMnrV";
+const KEY_OPT_LETTERS: &str = "DbfghMnrV";
 
 /// Parse one position of a `-k` spec: `FIELD[.CHAR][OPTS]`.
 /// Returns (field, char, option-letters). `char` is 0 when omitted.
