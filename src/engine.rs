@@ -1,6 +1,6 @@
 //! The sort engine: orchestrates reading, the chosen execution path, and output.
 
-use crate::compare::{compare_key, full_compare, KeyOpts};
+use crate::compare::{compare_key, full_compare, KeyOpts, NumericKey};
 use crate::config::Config;
 use crate::input::{read_all, split_lines};
 use rayon::prelude::*;
@@ -34,7 +34,7 @@ pub fn run(cfg: &Config) -> io::Result<Outcome> {
     let start = Instant::now();
     let terminator = cfg.terminator();
     let data = read_all(&cfg.files, terminator)?;
-    let mut lines = split_lines(&data, terminator);
+    let lines = split_lines(&data, terminator);
     let lines_in = lines.len();
     let opts = cfg.key_opts();
 
@@ -46,29 +46,17 @@ pub fn run(cfg: &Config) -> io::Result<Outcome> {
         });
     }
 
-    // Top-N without unique can short-circuit the full sort. With unique we sort
-    // fully, dedup, then truncate so "--top N" means "the first N distinct keys".
-    let fused_top = cfg.top.filter(|_| !cfg.unique);
-    match fused_top {
-        Some(n) => select_top(&mut lines, n, cfg, &opts),
-        None => sort_all(&mut lines, cfg, &opts),
-    }
+    let (ordered, duplicates_removed) = if opts.numeric {
+        numeric_order(lines, cfg)
+    } else {
+        byte_order(lines, cfg, &opts)
+    };
 
-    let mut duplicates_removed = 0;
-    if cfg.unique {
-        let before = lines.len();
-        lines.dedup_by(|a, b| compare_key(a, b, &opts) == Ordering::Equal);
-        duplicates_removed = before - lines.len();
-        if let Some(n) = cfg.top {
-            lines.truncate(n);
-        }
-    }
-
-    write_output(&lines, cfg, terminator)?;
+    write_output(&ordered, cfg, terminator)?;
 
     let stats = cfg.stats.then(|| Stats {
         lines_in,
-        lines_out: lines.len(),
+        lines_out: ordered.len(),
         duplicates_removed,
         elapsed_secs: start.elapsed().as_secs_f64(),
     });
@@ -78,32 +66,107 @@ pub fn run(cfg: &Config) -> io::Result<Outcome> {
     })
 }
 
-fn sort_all(lines: &mut [&[u8]], cfg: &Config, opts: &KeyOpts) {
-    // `-u` keeps the first line (in input order) of each equal-key run, so GNU
-    // disables the whole-line last-resort comparison and effectively sorts
-    // stably by key. We mirror that: a stable sort with last-resort suppressed.
-    let stable = cfg.stable || cfg.unique;
-    if stable {
-        lines.par_sort_by(|a, b| full_compare(a, b, opts, cfg.reverse, true));
-    } else {
-        lines.par_sort_unstable_by(|a, b| full_compare(a, b, opts, cfg.reverse, false));
-    }
+/// `-u` keeps the first line (in input order) of each equal-key run, so GNU
+/// disables the whole-line last-resort comparison and effectively sorts stably
+/// by key. We mirror that: stable + last-resort suppressed when `-u`.
+#[inline]
+fn stable_for(cfg: &Config) -> bool {
+    cfg.stable || cfg.unique
 }
 
-/// Fused top-N: partition out the N smallest (per the sort order) in O(n) with
-/// `select_nth_unstable`, then order just those N — avoiding the full sort that
-/// `sort | head -N` performs.
-fn select_top(lines: &mut Vec<&[u8]>, n: usize, cfg: &Config, opts: &KeyOpts) {
-    let n = n.min(lines.len());
-    if n == 0 {
-        lines.clear();
-        return;
+/// Plain/fold byte path (no `-n`).
+fn byte_order<'a>(
+    mut lines: Vec<&'a [u8]>,
+    cfg: &Config,
+    opts: &KeyOpts,
+) -> (Vec<&'a [u8]>, usize) {
+    // For `-u`, a stable sort only matters when a transform can equate lines
+    // that differ in bytes (`-f` fold, `-b` ignore-blanks). With a plain byte
+    // key, equal keys are byte-identical, so the faster unstable sort is safe.
+    let stable = cfg.stable || (cfg.unique && (opts.fold || opts.ignore_blanks));
+    let cmp = |a: &&[u8], b: &&[u8]| full_compare(a, b, opts, cfg.reverse, stable);
+
+    let fused_top = cfg.top.filter(|_| !cfg.unique);
+    match fused_top {
+        Some(n) => {
+            let n = n.min(lines.len());
+            if n == 0 {
+                return (Vec::new(), 0);
+            }
+            if n < lines.len() {
+                lines.select_nth_unstable_by(n - 1, |a, b| {
+                    full_compare(a, b, opts, cfg.reverse, false)
+                });
+                lines.truncate(n);
+            }
+            lines.par_sort_unstable_by(cmp);
+        }
+        None if stable => lines.par_sort_by(cmp),
+        None => lines.par_sort_unstable_by(cmp),
     }
-    if n < lines.len() {
-        lines.select_nth_unstable_by(n - 1, |a, b| full_compare(a, b, opts, cfg.reverse, false));
-        lines.truncate(n);
+
+    let mut dups = 0;
+    if cfg.unique {
+        let before = lines.len();
+        lines.dedup_by(|a, b| compare_key(a, b, opts) == Ordering::Equal);
+        dups = before - lines.len();
+        if let Some(n) = cfg.top {
+            lines.truncate(n);
+        }
     }
-    sort_all(lines, cfg, opts);
+    (lines, dups)
+}
+
+/// Numeric path with decorate-sort-undecorate: parse each line's leading number
+/// once (in parallel), sort the cheap precomputed keys, then drop them.
+fn numeric_order<'a>(lines: Vec<&'a [u8]>, cfg: &Config) -> (Vec<&'a [u8]>, usize) {
+    let stable = stable_for(cfg);
+    let mut dec: Vec<(NumericKey<'a>, &'a [u8])> = lines
+        .into_par_iter()
+        .map(|l| (NumericKey::parse(l), l))
+        .collect();
+
+    let cmp = |a: &(NumericKey, &[u8]), b: &(NumericKey, &[u8])| {
+        let mut o = a.0.cmp(&b.0);
+        if o == Ordering::Equal && !stable {
+            o = a.1.cmp(b.1); // whole-line last resort
+        }
+        if cfg.reverse {
+            o.reverse()
+        } else {
+            o
+        }
+    };
+
+    let fused_top = cfg.top.filter(|_| !cfg.unique);
+    match fused_top {
+        Some(n) => {
+            let n = n.min(dec.len());
+            if n == 0 {
+                return (Vec::new(), 0);
+            }
+            if n < dec.len() {
+                dec.select_nth_unstable_by(n - 1, cmp);
+                dec.truncate(n);
+            }
+            dec.par_sort_unstable_by(cmp);
+        }
+        None if stable => dec.par_sort_by(cmp),
+        None => dec.par_sort_unstable_by(cmp),
+    }
+
+    let mut dups = 0;
+    if cfg.unique {
+        let before = dec.len();
+        dec.dedup_by(|a, b| a.0.cmp(&b.0) == Ordering::Equal);
+        dups = before - dec.len();
+        if let Some(n) = cfg.top {
+            dec.truncate(n);
+        }
+    }
+
+    let out = dec.into_iter().map(|(_, l)| l).collect();
+    (out, dups)
 }
 
 fn check_sorted(lines: &[&[u8]], cfg: &Config, opts: &KeyOpts) -> i32 {

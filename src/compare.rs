@@ -81,46 +81,90 @@ fn cmp_int(a: &[u8], b: &[u8]) -> Ordering {
     a.len().cmp(&b.len()).then_with(|| a.cmp(b))
 }
 
-/// Numeric comparison of the leading numbers in `a` and `b` (`-n`).
-pub fn numeric_cmp(a: &[u8], b: &[u8]) -> Ordering {
-    let (na, ia, fa) = split_number(a);
-    let (nb, ib, fb) = split_number(b);
-    let za = ia.is_empty() && fa.is_empty();
-    let zb = ib.is_empty() && fb.is_empty();
-    match (za, zb) {
-        (true, true) => return Ordering::Equal, // both zero (sign of zero is irrelevant)
-        (true, false) => {
-            return if nb {
-                Ordering::Greater
-            } else {
-                Ordering::Less
-            }
+/// A leading number decomposed once, so it can be compared many times without
+/// re-parsing. The digit slices borrow the source line. This is the key to the
+/// decorate-sort-undecorate path: `O(n)` parses instead of `O(n log n)`.
+#[derive(Clone, Copy, Debug)]
+pub struct NumericKey<'a> {
+    neg: bool,
+    zero: bool,
+    int: &'a [u8],
+    frac: &'a [u8],
+}
+
+impl<'a> NumericKey<'a> {
+    #[inline]
+    pub fn parse(s: &'a [u8]) -> Self {
+        let (neg, int, frac) = split_number(s);
+        NumericKey {
+            neg,
+            zero: int.is_empty() && frac.is_empty(),
+            int,
+            frac,
         }
-        (false, true) => {
-            return if na {
-                Ordering::Less
-            } else {
-                Ordering::Greater
-            }
-        }
-        (false, false) => {}
     }
-    if na != nb {
-        // negative < positive
-        return if na {
-            Ordering::Less
+}
+
+impl Ord for NumericKey<'_> {
+    #[inline]
+    fn cmp(&self, other: &Self) -> Ordering {
+        match (self.zero, other.zero) {
+            (true, true) => return Ordering::Equal,
+            (true, false) => {
+                return if other.neg {
+                    Ordering::Greater
+                } else {
+                    Ordering::Less
+                }
+            }
+            (false, true) => {
+                return if self.neg {
+                    Ordering::Less
+                } else {
+                    Ordering::Greater
+                }
+            }
+            (false, false) => {}
+        }
+        if self.neg != other.neg {
+            return if self.neg {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            };
+        }
+        // Fraction digits compare lexically: trailing zeros are stripped, so a
+        // shorter slice is the prefix and therefore the smaller fraction.
+        let mag = cmp_int(self.int, other.int).then_with(|| self.frac.cmp(other.frac));
+        if self.neg {
+            mag.reverse()
         } else {
-            Ordering::Greater
-        };
+            mag
+        }
     }
-    // Fraction digits compare lexically: trailing zeros are stripped, so a
-    // shorter slice is the prefix and therefore the smaller fraction.
-    let mag = cmp_int(ia, ib).then_with(|| fa.cmp(fb));
-    if na {
-        mag.reverse()
-    } else {
-        mag
+}
+
+impl PartialOrd for NumericKey<'_> {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
+}
+
+impl PartialEq for NumericKey<'_> {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for NumericKey<'_> {}
+
+/// Numeric comparison of the leading numbers in `a` and `b` (`-n`). Used on the
+/// non-decorated paths (`-c`, `-u` equality); the sort itself decorates first.
+#[inline]
+pub fn numeric_cmp(a: &[u8], b: &[u8]) -> Ordering {
+    NumericKey::parse(a).cmp(&NumericKey::parse(b))
 }
 
 /// Case-folded byte comparison (`-f`): ASCII lower case folds to upper case.

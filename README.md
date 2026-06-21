@@ -19,19 +19,26 @@ tool simply can't do.
 GNU `sort` leaves performance on the table — historically single-threaded, and
 it pays a heavy Unicode-collation cost in non-`C` locales. `fsort` is parallel
 by default and compares bytes by default (equivalent to `LC_ALL=C`), which is
-both fast and predictable. On a 10M-line integer file (4 cores):
+both fast and predictable.
 
-| Command | Wall time | Output |
-|---|---|---|
-| `sort -n` (GNU coreutils 9.4, `LC_ALL=C`) | ~7.2 s | — |
-| `fsort -n` | **~3.7 s** | byte-identical to GNU |
-| `sort -n \| head -10` | ~2.1 s | — |
-| `fsort -n --top 10` | **~0.76 s** | byte-identical to `sort \| head` |
+Measured with [`hyperfine`](https://github.com/sharkdp/hyperfine) (5 runs,
+1 warmup) against **GNU coreutils sort 9.4 on 4 cores**. To be fair, **both
+tools run under `LC_ALL=C` and use all cores** — we deliberately do *not*
+exploit GNU sort's much larger slowdown in a UTF-8 locale. Output is verified
+**byte-identical** to GNU in every case.
 
-*(Indicative numbers from a 4-core dev box; reproduce with
-[`scripts/difftest.sh`](scripts/difftest.sh) and your own corpus. Honest,
-reproducible benchmarks are a project goal — these will be replaced with a
-`hyperfine` suite.)*
+| Workload (input) | GNU sort | fsort | Speedup |
+|---|---:|---:|---:|
+| Numeric, 10M ints (`-n`) | 4.81 s | **2.03 s** | **2.37×** |
+| Float, 10M decimals (`-n`) | 4.92 s | **2.32 s** | **2.12×** |
+| Text, 8M lines | 2.15 s | **1.23 s** | **1.74×** |
+| Unique text, 8M lines (`-u`) | 2.54 s | **1.54 s** | **1.65×** |
+| Top-100, 10M ints (`--top 100`) | 2.12 s | **0.64 s** | **3.33×** |
+
+Reproduce on your own hardware and corpus with
+[`scripts/benchmark.sh`](scripts/benchmark.sh); the raw hyperfine tables are in
+[`benchmarks/results.md`](benchmarks/results.md). Correctness is independently
+checked against GNU `sort` by [`scripts/difftest.sh`](scripts/difftest.sh).
 
 ## Install
 
