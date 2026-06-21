@@ -346,7 +346,7 @@ fn single_key_order<'a>(
 
 /// General multi-key path driven by a `Sorter` (handles `-k`, `-g/-h/-V/-M`).
 fn general_order<'a>(
-    mut lines: Vec<&'a [u8]>,
+    lines: Vec<&'a [u8]>,
     cfg: &Config,
     sorter: &Sorter,
 ) -> (Vec<&'a [u8]>, usize) {
@@ -354,36 +354,91 @@ fn general_order<'a>(
     if sorter.keys.len() == 1 {
         return single_key_order(lines, cfg, sorter);
     }
+
+    // Multi-key DSU: precompute every key of every line once into a flat array
+    // (`dec[i*k + j]` is line `i`'s key `j`), so the sort does no per-comparison
+    // field extraction. Records carry only an index into that array plus the
+    // line, avoiding a per-line allocation.
+    let k = sorter.keys.len();
+    let tab = sorter.tab;
     let stable = sorter.suppress_last_resort;
-    let cmp = |a: &&[u8], b: &&[u8]| sorter.compare(a, b);
+    let global_reverse = sorter.global_reverse;
+    let specs: Vec<(Kind, bool, bool)> = sorter
+        .keys
+        .iter()
+        .map(|key| (key.kind, key.fold, key.reverse))
+        .collect();
+
+    let n = lines.len();
+    let dec: Vec<Dec> = (0..n * k)
+        .into_par_iter()
+        .map(|idx| {
+            let key = &sorter.keys[idx % k];
+            let kb = extract(lines[idx / k], key, tab);
+            if key.kind == Kind::Numeric {
+                Dec::Num(NumericKey::parse(kb))
+            } else {
+                Dec::Slice(kb)
+            }
+        })
+        .collect();
+
+    let key_cmp = |ba: usize, bb: usize| -> Ordering {
+        for (j, &(kind, fold, rev)) in specs.iter().enumerate() {
+            let mut o = match (&dec[ba + j], &dec[bb + j]) {
+                (Dec::Num(x), Dec::Num(y)) => x.cmp(y),
+                (Dec::Slice(x), Dec::Slice(y)) => compare_kind(x, y, kind, fold),
+                _ => Ordering::Equal, // unreachable: key j is the same variant for all lines
+            };
+            if rev {
+                o = o.reverse();
+            }
+            if o != Ordering::Equal {
+                return o;
+            }
+        }
+        Ordering::Equal
+    };
+    let full_cmp = |a: &(usize, &[u8]), b: &(usize, &[u8])| {
+        let mut o = key_cmp(a.0, b.0);
+        if o == Ordering::Equal && !stable {
+            o = a.1.cmp(b.1);
+            if global_reverse {
+                o = o.reverse();
+            }
+        }
+        o
+    };
+
+    let mut recs: Vec<(usize, &[u8])> = (0..n).map(|i| (i * k, lines[i])).collect();
 
     let fused_top = cfg.top.filter(|_| !cfg.unique);
     match fused_top {
-        Some(n) => {
-            let n = n.min(lines.len());
-            if n == 0 {
+        Some(top) => {
+            let top = top.min(recs.len());
+            if top == 0 {
                 return (Vec::new(), 0);
             }
-            if n < lines.len() {
-                lines.select_nth_unstable_by(n - 1, |a, b| sorter.compare(a, b));
-                lines.truncate(n);
+            if top < recs.len() {
+                recs.select_nth_unstable_by(top - 1, full_cmp);
+                recs.truncate(top);
             }
-            lines.par_sort_unstable_by(cmp);
+            recs.par_sort_unstable_by(full_cmp);
         }
-        None if stable => lines.par_sort_by(cmp),
-        None => lines.par_sort_unstable_by(cmp),
+        None if stable => recs.par_sort_by(full_cmp),
+        None => recs.par_sort_unstable_by(full_cmp),
     }
 
     let mut dups = 0;
     if cfg.unique {
-        let before = lines.len();
-        lines.dedup_by(|a, b| sorter.key_equal(a, b));
-        dups = before - lines.len();
-        if let Some(n) = cfg.top {
-            lines.truncate(n);
+        let before = recs.len();
+        recs.dedup_by(|a, b| key_cmp(a.0, b.0) == Ordering::Equal);
+        dups = before - recs.len();
+        if let Some(top) = cfg.top {
+            recs.truncate(top);
         }
     }
-    (lines, dups)
+    (recs.into_iter().map(|(_, l)| l).collect(), dups)
 }
 
 /// k-way merge of already-sorted inputs (`-m`). Linear min-scan over k heads;
