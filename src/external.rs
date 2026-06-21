@@ -172,11 +172,10 @@ pub fn run_external(
     let temp_dir = cfg.temp_dirs.first().cloned();
     let stable = cfg.stable || cfg.unique;
 
-    let mut out: Box<dyn Write> = match &cfg.output {
-        Some(p) => Box::new(BufWriter::with_capacity(IO_BUF, File::create(p)?)),
-        None => Box::new(BufWriter::with_capacity(IO_BUF, io::stdout().lock())),
-    };
-
+    // The output file is created lazily, only after the input has been fully
+    // consumed (either into a single in-memory chunk or spilled to temp runs).
+    // Opening it eagerly would truncate it first, destroying the input when
+    // `-o FILE` names a file that is also an input (`xort -S ... -o f f`).
     let mut runs: Vec<NamedTempFile> = Vec::new();
     let mut total = 0usize;
     let mut carry: Vec<u8> = Vec::new();
@@ -201,6 +200,9 @@ pub fn run_external(
             if cfg.unique {
                 lines.dedup_by(|a, b| sorter.key_equal(a, b));
             }
+            // Input fully read; safe to truncate the output even if it aliases
+            // an input file.
+            let mut out = open_output(cfg)?;
             write_lines(&mut out, &lines, terminator)?;
             out.flush()?;
             return Ok((total, lines.len(), 1));
@@ -213,8 +215,24 @@ pub fn run_external(
     }
 
     let chunks = runs.len();
+    // All input has been read and spilled to temp runs, so creating the output
+    // (which may alias an input file) is now safe.
+    let out = open_output(cfg)?;
     let lines_out = merge_runs(runs, sorter, cfg, terminator, out)?;
     Ok((total, lines_out, chunks))
+}
+
+/// Open the destination writer: the `-o FILE` target (created/truncated) or
+/// stdout. Created lazily by `run_external` once all input is consumed.
+fn open_output(cfg: &Config) -> io::Result<Box<dyn Write>> {
+    Ok(match &cfg.output {
+        Some(p) => Box::new(BufWriter::with_capacity(
+            IO_BUF,
+            File::create(p)
+                .map_err(|e| io::Error::new(e.kind(), format!("{}: {}", p.display(), e)))?,
+        )),
+        None => Box::new(BufWriter::with_capacity(IO_BUF, io::stdout().lock())),
+    })
 }
 
 fn write_lines(w: &mut dyn Write, lines: &[&[u8]], terminator: u8) -> io::Result<()> {

@@ -51,39 +51,65 @@ fn parse_csv_keys(cfg: &Config, headers: Option<&csv::ByteRecord>) -> Result<Vec
     cfg.keys
         .iter()
         .map(|spec| {
-            let token = spec.split(',').next().unwrap_or(spec);
-            if token.as_bytes().first().is_some_and(|b| b.is_ascii_digit()) {
-                // numeric column index with inline options, like text `-k`
-                let i = token
-                    .find(|c: char| !c.is_ascii_digit())
-                    .unwrap_or(token.len());
-                let n: usize = token[..i]
-                    .parse()
-                    .map_err(|_| format!("invalid column index '{token}'"))?;
-                if n == 0 {
-                    return Err(format!("column index is zero in '{token}'"));
+            if spec.as_bytes().first().is_some_and(|b| b.is_ascii_digit()) {
+                // Numeric column index with the same `F[.C][OPTS][,F[.C][OPTS]]`
+                // grammar as text `-k`. A CSV column is atomic, so character
+                // positions and multi-column ranges are unsupported; the range
+                // form is accepted only as `-kN,Nopts` so its options are not
+                // silently dropped.
+                let (start, end) = match spec.split_once(',') {
+                    Some((s, e)) => (s, Some(e)),
+                    None => (spec.as_str(), None),
+                };
+                let (sf, sc, sopts) = key::parse_pos(start)?;
+                let (ec, eopts) = match end {
+                    Some(e) => {
+                        let (ef, ec, eo) = key::parse_pos(e)?;
+                        if ef != sf {
+                            return Err(format!(
+                                "multi-column key ranges are not supported for CSV/TSV: '{spec}'"
+                            ));
+                        }
+                        (ec, eo)
+                    }
+                    None => (0, String::new()),
+                };
+                if sc != 0 || ec != 0 {
+                    return Err(format!(
+                        "character positions are not supported for CSV/TSV columns: '{spec}'"
+                    ));
                 }
-                let opts = &token[i..];
+                let opts = format!("{sopts}{eopts}");
+                // All-or-nothing inheritance, mirroring text `-k`: a key with no
+                // inline options of its own takes the global type/fold/reverse.
+                let (kind, fold, reverse) = if opts.is_empty() {
+                    (cfg.global_kind(), cfg.fold_case, cfg.reverse)
+                } else {
+                    (
+                        key::kind_from_opts(&opts),
+                        opts.contains('f'),
+                        opts.contains('r'),
+                    )
+                };
                 Ok(ColKey {
-                    col: Some(n - 1),
-                    kind: key::kind_from_opts(opts),
-                    fold: opts.contains('f'),
-                    reverse: opts.contains('r'),
+                    col: Some(sf - 1),
+                    kind,
+                    fold,
+                    reverse,
                 })
             } else {
                 // column name; type/order come from global flags
-                let headers = headers.ok_or_else(|| {
-                    format!("column name '{token}' requires --header for CSV/TSV")
-                })?;
+                let headers = headers
+                    .ok_or_else(|| format!("column name '{spec}' requires --header for CSV/TSV"))?;
                 let col = headers
                     .iter()
-                    .position(|h| h == token.as_bytes())
+                    .position(|h| h == spec.as_bytes())
                     .ok_or_else(|| {
                         let names: Vec<String> = headers
                             .iter()
                             .map(|h| String::from_utf8_lossy(h).into_owned())
                             .collect();
-                        format!("no column named '{token}'; available: {}", names.join(", "))
+                        format!("no column named '{spec}'; available: {}", names.join(", "))
                     })?;
                 Ok(ColKey {
                     col: Some(col),
@@ -257,7 +283,8 @@ fn json_key(value: &serde_json::Value, path: &[String]) -> JKey {
 }
 
 fn parse_paths(cfg: &Config) -> Vec<Vec<String>> {
-    cfg.keys
+    let paths: Vec<Vec<String>> = cfg
+        .keys
         .iter()
         .map(|k| {
             k.trim_start_matches('.')
@@ -267,7 +294,15 @@ fn parse_paths(cfg: &Config) -> Vec<Vec<String>> {
                 .collect()
         })
         .filter(|p: &Vec<String>| !p.is_empty())
-        .collect()
+        .collect();
+    // No key given: sort by the whole value (an empty path resolves to the
+    // record itself). Without this the comparator sees no paths and reports
+    // every record equal, which silently collapses all rows to one under `-u`.
+    if paths.is_empty() {
+        vec![Vec::new()]
+    } else {
+        paths
+    }
 }
 
 fn run_json(cfg: &Config, start: Instant, lines_mode: bool) -> io::Result<Outcome> {

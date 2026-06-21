@@ -99,9 +99,16 @@ pub fn kind_from_opts(opts: &str) -> Kind {
     }
 }
 
+/// The ordering-option letters xort understands within a `-k` spec.
+const KEY_OPT_LETTERS: &str = "bfghMnrV";
+
 /// Parse one position of a `-k` spec: `FIELD[.CHAR][OPTS]`.
 /// Returns (field, char, option-letters). `char` is 0 when omitted.
-fn parse_pos(s: &str) -> Result<(usize, usize, String), String> {
+///
+/// Unlike GNU's lenient parser, an unknown option letter or a `.` with no
+/// following character position is rejected (exit 2), rather than silently
+/// ignored.
+pub fn parse_pos(s: &str) -> Result<(usize, usize, String), String> {
     let b = s.as_bytes();
     let mut i = 0;
     while i < b.len() && b[i].is_ascii_digit() {
@@ -123,9 +130,18 @@ fn parse_pos(s: &str) -> Result<(usize, usize, String), String> {
         while i < b.len() && b[i].is_ascii_digit() {
             i += 1;
         }
-        ch = s[cs..i].parse().unwrap_or(0);
+        if i == cs {
+            return Err(format!("missing character position after '.' in '{s}'"));
+        }
+        ch = s[cs..i]
+            .parse()
+            .map_err(|_| format!("invalid character position in '{s}'"))?;
     }
-    Ok((field, ch, s[i..].to_string()))
+    let opts = &s[i..];
+    if let Some(bad) = opts.chars().find(|c| !KEY_OPT_LETTERS.contains(*c)) {
+        return Err(format!("invalid ordering option '{bad}' in '{s}'"));
+    }
+    Ok((field, ch, opts.to_string()))
 }
 
 /// Parse a `-k` key specification, applying global inheritance: a key that
