@@ -133,6 +133,14 @@ pub struct Cli {
     #[arg(long = "stats")]
     pub stats: bool,
 
+    /// Generate a shell completion script and exit.
+    #[arg(long = "completions", value_name = "SHELL")]
+    pub completions: Option<clap_complete::Shell>,
+
+    /// Print the man page (troff) to stdout and exit.
+    #[arg(long = "man")]
+    pub man: bool,
+
     /// Print help.
     #[arg(long = "help", action = ArgAction::Help)]
     pub help: Option<bool>,

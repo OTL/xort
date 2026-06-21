@@ -1,9 +1,26 @@
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use std::process::ExitCode;
 use xort::cli::Cli;
 
 fn main() -> ExitCode {
-    let cfg = match Cli::parse().into_config() {
+    let cli = Cli::parse();
+
+    // Generators that print and exit before doing any sorting.
+    if let Some(shell) = cli.completions {
+        let mut cmd = Cli::command();
+        clap_complete::generate(shell, &mut cmd, "xort", &mut std::io::stdout());
+        return ExitCode::SUCCESS;
+    }
+    if cli.man {
+        let man = clap_mangen::Man::new(Cli::command());
+        if let Err(e) = man.render(&mut std::io::stdout()) {
+            eprintln!("xort: {e}");
+            return ExitCode::from(2);
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    let cfg = match cli.into_config() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("xort: {e}");

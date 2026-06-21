@@ -7,6 +7,7 @@
 pub mod cli;
 pub mod compare;
 pub mod config;
+pub mod diag;
 pub mod engine;
 pub mod external;
 pub mod format;

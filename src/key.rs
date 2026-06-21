@@ -209,6 +209,13 @@ fn field_end(line: &[u8], n: usize, tab: Option<u8>) -> usize {
 /// Extract the key bytes for `key` from `line` (GNU `-k` semantics).
 #[inline]
 pub fn extract<'a>(line: &'a [u8], key: &KeyDef, tab: Option<u8>) -> &'a [u8] {
+    let (beg, end) = extract_range(line, key, tab);
+    &line[beg..end]
+}
+
+/// The `[start, end)` byte range of `key` within `line` (for highlighting and
+/// diagnostics).
+pub fn extract_range(line: &[u8], key: &KeyDef, tab: Option<u8>) -> (usize, usize) {
     let lim = line.len();
     // --- start position --------------------------------------------------
     let mut beg = pos_after_fields(line, key.start_field - 1, tab);
@@ -246,7 +253,7 @@ pub fn extract<'a>(line: &'a [u8], key: &KeyDef, tab: Option<u8>) -> &'a [u8] {
         }
     };
     let end = end.clamp(beg, lim);
-    &line[beg..end]
+    (beg, end)
 }
 
 /// A fully-resolved comparison plan: an ordered list of keys plus the global
@@ -297,6 +304,35 @@ impl Sorter {
             }
         }
         true
+    }
+
+    /// The byte range of the first (primary) key within `line`, for output
+    /// highlighting.
+    pub fn first_key_range(&self, line: &[u8]) -> (usize, usize) {
+        match self.keys.first() {
+            Some(k) => extract_range(line, k, self.tab),
+            None => (0, line.len()),
+        }
+    }
+
+    /// The range (within `b`) of the key that put `b` out of order relative to
+    /// `a`, for `--check` diagnostics. Falls back to the whole line.
+    pub fn breaking_key_range(&self, a: &[u8], b: &[u8]) -> (usize, usize) {
+        for key in &self.keys {
+            let mut o = compare::compare_kind(
+                extract(a, key, self.tab),
+                extract(b, key, self.tab),
+                key.kind,
+                key.fold,
+            );
+            if key.reverse {
+                o = o.reverse();
+            }
+            if o != Ordering::Equal {
+                return extract_range(b, key, self.tab);
+            }
+        }
+        (0, b.len())
     }
 
     /// Ordering for `-c` checking: keys plus per-key reverse, no last-resort.

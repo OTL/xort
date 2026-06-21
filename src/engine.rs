@@ -95,12 +95,8 @@ pub fn run(cfg: &Config) -> io::Result<Outcome> {
     let lines_in = lines.len();
 
     if cfg.check {
-        let code = if cfg.is_simple_global() {
-            check_sorted_simple(&lines, cfg, &cfg.key_opts())
-        } else {
-            let sorter = cfg.build_sorter().map_err(invalid)?;
-            check_sorted_sorter(&lines, cfg, &sorter)
-        };
+        let sorter = cfg.build_sorter().map_err(invalid)?;
+        let code = check_sorted(&lines, cfg, &sorter);
         return Ok(Outcome {
             exit_code: code,
             stats: None,
@@ -126,6 +122,9 @@ pub fn run(cfg: &Config) -> io::Result<Outcome> {
         });
     }
 
+    // Built once; used for the general path and/or output key highlighting.
+    let sorter = cfg.build_sorter().map_err(invalid)?;
+
     let (ordered, duplicates_removed) = if cfg.is_simple_global() {
         let opts = cfg.key_opts();
         if opts.numeric {
@@ -134,11 +133,11 @@ pub fn run(cfg: &Config) -> io::Result<Outcome> {
             byte_order(lines, cfg, &opts)
         }
     } else {
-        let sorter = cfg.build_sorter().map_err(invalid)?;
         general_order(lines, cfg, &sorter)
     };
 
-    write_output_with_header(&ordered, header, cfg, terminator)?;
+    let highlight = crate::diag::color_stdout(cfg).then_some(&sorter);
+    write_output_with_header(&ordered, header, cfg, terminator, highlight)?;
 
     let stats = cfg.stats.then(|| Stats {
         lines_in,
@@ -377,39 +376,19 @@ fn write_counts(
     write(BufWriter::new(sink))
 }
 
-fn check_sorted_simple(lines: &[&[u8]], cfg: &Config, opts: &KeyOpts) -> i32 {
-    for (i, win) in lines.windows(2).enumerate() {
-        let (prev, cur) = (win[0], win[1]);
-        let mut ord = compare_key(prev, cur, opts);
-        if cfg.reverse {
-            ord = ord.reverse();
-        }
-        if ord == Ordering::Greater || (cfg.unique && ord == Ordering::Equal) {
-            report_disorder(i + 2, cur);
-            return 1;
-        }
-    }
-    0
-}
-
-fn check_sorted_sorter(lines: &[&[u8]], cfg: &Config, sorter: &Sorter) -> i32 {
+fn check_sorted(lines: &[&[u8]], cfg: &Config, sorter: &Sorter) -> i32 {
+    let header_offset = usize::from(cfg.header);
     for (i, win) in lines.windows(2).enumerate() {
         let (prev, cur) = (win[0], win[1]);
         let ord = sorter.check_compare(prev, cur);
         if ord == Ordering::Greater || (cfg.unique && ord == Ordering::Equal) {
-            report_disorder(i + 2, cur);
+            let lineno = i + 2 + header_offset;
+            let range = sorter.breaking_key_range(prev, cur);
+            crate::diag::report_disorder(cfg, prev, cur, lineno, range);
             return 1;
         }
     }
     0
-}
-
-fn report_disorder(lineno: usize, line: &[u8]) {
-    eprintln!(
-        "xort: -:{}: disorder: {}",
-        lineno,
-        String::from_utf8_lossy(line)
-    );
 }
 
 fn write_output_with_header(
@@ -417,21 +396,28 @@ fn write_output_with_header(
     header: Option<&[u8]>,
     cfg: &Config,
     terminator: u8,
+    highlight: Option<&Sorter>,
 ) -> io::Result<()> {
     match &cfg.output {
         Some(path) => {
             let f = File::create(path)?;
-            write_lines(BufWriter::new(f), lines, header, terminator)
+            write_lines(BufWriter::new(f), lines, header, terminator, highlight)
         }
         None => {
             let stdout = io::stdout();
-            write_lines(BufWriter::new(stdout.lock()), lines, header, terminator)
+            write_lines(
+                BufWriter::new(stdout.lock()),
+                lines,
+                header,
+                terminator,
+                highlight,
+            )
         }
     }
 }
 
 fn write_output(lines: &[&[u8]], cfg: &Config, terminator: u8) -> io::Result<()> {
-    write_output_with_header(lines, None, cfg, terminator)
+    write_output_with_header(lines, None, cfg, terminator, None)
 }
 
 fn write_lines<W: Write>(
@@ -439,14 +425,25 @@ fn write_lines<W: Write>(
     lines: &[&[u8]],
     header: Option<&[u8]>,
     terminator: u8,
+    highlight: Option<&Sorter>,
 ) -> io::Result<()> {
     if let Some(h) = header {
         w.write_all(h)?;
         w.write_all(std::slice::from_ref(&terminator))?;
     }
-    for line in lines {
-        w.write_all(line)?;
-        w.write_all(std::slice::from_ref(&terminator))?;
+    match highlight {
+        Some(sorter) => {
+            for line in lines {
+                let range = sorter.first_key_range(line);
+                crate::diag::write_highlighted(&mut w, line, range, terminator)?;
+            }
+        }
+        None => {
+            for line in lines {
+                w.write_all(line)?;
+                w.write_all(std::slice::from_ref(&terminator))?;
+            }
+        }
     }
     w.flush()
 }

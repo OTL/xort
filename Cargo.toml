@@ -18,9 +18,13 @@ name = "xort"
 path = "src/lib.rs"
 
 [dependencies]
+anstream = "1.0.0"
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4.6.5"
+clap_mangen = "0.3.0"
 csv = "1.4.0"
 memchr = "2"
+owo-colors = "4.3.0"
 rayon = "1"
 serde_json = { version = "1.0.150", features = ["preserve_order"] }
 tempfile = "3.27.0"

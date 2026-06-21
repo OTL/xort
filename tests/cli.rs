@@ -310,3 +310,40 @@ fn json_array_sorted_by_field() {
         .collect();
     assert_eq!(ages, vec![5, 9, 50]);
 }
+
+// --- M5: UX polish ----------------------------------------------------------
+
+#[test]
+fn color_never_has_no_escapes() {
+    let out = run(&["--color=never"], "b\na\n");
+    assert_eq!(out, "a\nb\n");
+    assert!(!out.contains('\x1b'));
+}
+
+#[test]
+fn color_always_highlights() {
+    let out = run(&["--color=always"], "b\na\n");
+    assert!(out.contains('\x1b'), "forced color must emit ANSI");
+}
+
+#[test]
+fn rich_check_reports_and_exits_1() {
+    let (out, code) = xort(&["-c", "-k2,2n"], b"a 1\nb 5\nc 3\n");
+    assert_eq!(code, 1);
+    // diagnostics go to stderr; stdout stays empty
+    assert!(out.is_empty());
+}
+
+#[test]
+fn completions_generate() {
+    let (out, code) = xort(&["--completions", "bash"], b"");
+    assert_eq!(code, 0);
+    assert!(!out.is_empty());
+}
+
+#[test]
+fn man_page_generates() {
+    let (out, code) = xort(&["--man"], b"");
+    assert_eq!(code, 0);
+    assert!(String::from_utf8_lossy(&out).contains(".TH xort"));
+}

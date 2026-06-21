@@ -7,9 +7,10 @@ compatible enough to drop into your existing scripts and muscle memory, but
 **parallel by default**, measurably faster, and with a few things the classic
 tool simply can't do.
 
-> **Status:** early. Milestone 1 (a correct, parallel plain sort with the core
-> flags) is implemented and differentially tested against GNU `sort`. See the
-> [roadmap](#roadmap).
+> **Status:** feature-complete for v1 (milestones M1–M5). GNU-compatible sort
+> with field keys and all type comparators, external merge sort, fused
+> `--top`/`--count`, CSV/JSON awareness, and UX polish — differentially tested
+> against GNU `sort` (130 cases). See the [roadmap](#roadmap).
 
 [ripgrep]: https://github.com/BurntSushi/ripgrep
 [fd]: https://github.com/sharkdp/fd
@@ -54,29 +55,51 @@ cargo install --path .   # from a checkout
 xort [FILE...]            sort lines of text (stdin if no files)
 
   -n, --numeric-sort       compare by leading numeric value
+  -g, --general-numeric    compare by general float value (incl. exponents)
+  -h, --human-numeric      compare human sizes (2K, 1G, ...)
+  -V, --version-sort       natural/version ordering (v2 < v10)
+  -M, --month-sort         (unknown) < JAN < ... < DEC
+  -k, --key=KEYDEF         sort by a key: F[.C][OPTS][,F[.C][OPTS]]
+  -t, --field-separator=SEP
   -r, --reverse            reverse the result
   -u, --unique             output only the first of each equal-key run
   -s, --stable             keep input order among equal keys
   -f, --ignore-case        fold lower case to upper case
   -b, --ignore-leading-blanks
+  -m, --merge              merge already-sorted inputs
+  -c, --check              check whether input is sorted; rich diagnostics
   -z, --zero-terminated    lines end with NUL, not newline
-  -c, --check              check whether input is sorted; don't sort
   -o, --output=FILE        write result to FILE
+  -S, --buffer-size=SIZE   spill to disk above SIZE (external merge sort)
+  -T, --temporary-directory=DIR
       --parallel=N         use N threads
 
 New in xort:
       --top=N              emit only the first N lines in sort order, using a
                            bounded selection instead of a full sort + head
+      --count              with grouping, prefix each line with its count
+                           (built-in `sort | uniq -c`)
+      --header             keep the first line on top, exclude it from sorting
+      --csv / --tsv        parse quoted CSV/TSV; sort by column index or name
+      --json / --jsonl     sort a JSON array / JSONL stream by a field path
+      --color=WHEN         highlight the sort key (auto|always|never)
       --stats              print line counts and elapsed time to stderr
+      --completions=SHELL  print a shell completion script
+      --man                print the man page
 ```
 
 ### Examples
 
 ```sh
-xort -n data.txt                 # numeric sort
-xort -u names.txt                # sorted unique
-xort -n --top 10 metrics.txt     # 10 smallest, far cheaper than sort | head
-du -b * | xort -n --top 5        # 5 largest, etc.
+xort -n data.txt                      # numeric sort
+xort -u names.txt                     # sorted unique
+xort -n --top 10 metrics.txt          # 10 smallest, far cheaper than sort | head
+du -b * | xort -n --top 5             # 5 largest
+xort --count access.log               # built-in `sort | uniq -c`, ~30x faster idiom
+xort -t: -k3,3n /etc/passwd           # sort by 3rd colon field, numeric
+xort --csv --header -k age -n people.csv   # CSV: sort by the "age" column
+cat events.jsonl | xort --jsonl -k .ts     # JSONL: sort by .ts field
+xort -n -S 256M huge.txt              # external merge sort for >RAM inputs
 ```
 
 ## Compatibility
@@ -90,13 +113,15 @@ across random word/number inputs and flag combinations.
 
 - [x] **M1 — table stakes:** parallel in-memory sort, `-n -r -u -s -f -b -z -c -o`,
       `--top`, `--stats`, differential testing.
-- [ ] **M2 — GNU-compat depth:** `-k`/`-t` field keys, `-g -h -V -M`, `-m`,
+- [x] **M2 — GNU-compat depth:** `-k`/`-t` field keys, `-g -h -V -M`, `-m`,
       `-S`/`-T` and external merge sort for inputs larger than RAM.
-- [ ] **M3 — killer features:** `--header`, fused `-u --count` (built-in
+- [x] **M3 — killer features:** `--header`, fused `--count` (built-in
       `sort | uniq -c`).
-- [ ] **M4 — structured formats:** CSV/TSV (sort by column name), JSON/JSONL.
-- [ ] **M5 — UX polish:** rich `--check` diagnostics, colorized key highlight,
+- [x] **M4 — structured formats:** CSV/TSV (sort by column name), JSON/JSONL.
+- [x] **M5 — UX polish:** rich `--check` diagnostics, colorized key highlight,
       shell completions, man page.
+- [ ] **M6 — launch:** publish to crates.io, package for Homebrew/apt, write
+      the launch blog post around the benchmark numbers.
 
 ## Development
 
