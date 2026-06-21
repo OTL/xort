@@ -102,6 +102,25 @@ pub fn run(cfg: &Config) -> io::Result<Outcome> {
         });
     }
 
+    // Fused dedup + count (like `sort | uniq -c`): one line per equal-key group,
+    // prefixed with its occurrence count.
+    if cfg.count {
+        let sorter = cfg.build_sorter().map_err(invalid)?;
+        let groups = grouped_counts(lines, &sorter, cfg);
+        let lines_out = groups.len();
+        write_counts(&groups, header, cfg, terminator)?;
+        let stats = cfg.stats.then(|| Stats {
+            lines_in,
+            lines_out,
+            duplicates_removed: lines_in.saturating_sub(lines_out),
+            elapsed_secs: start.elapsed().as_secs_f64(),
+        });
+        return Ok(Outcome {
+            exit_code: 0,
+            stats,
+        });
+    }
+
     let (ordered, duplicates_removed) = if cfg.is_simple_global() {
         let opts = cfg.key_opts();
         if opts.numeric {
@@ -302,6 +321,55 @@ fn merge_sorted<'a>(
         out.push(line);
     }
     (out, dups)
+}
+
+/// Sort stably by key, then run-length-count adjacent equal-key lines, keeping
+/// the first line of each group as the representative (matching `sort | uniq -c`
+/// for the whole-line case). `--top N` keeps the first N groups in key order.
+fn grouped_counts<'a>(
+    mut lines: Vec<&'a [u8]>,
+    sorter: &Sorter,
+    cfg: &Config,
+) -> Vec<(u64, &'a [u8])> {
+    lines.par_sort_by(|a, b| sorter.compare(a, b));
+    let mut out: Vec<(u64, &[u8])> = Vec::new();
+    for line in lines {
+        match out.last_mut() {
+            Some((count, rep)) if sorter.key_equal(rep, line) => *count += 1,
+            _ => out.push((1, line)),
+        }
+    }
+    if let Some(n) = cfg.top {
+        out.truncate(n);
+    }
+    out
+}
+
+fn write_counts(
+    groups: &[(u64, &[u8])],
+    header: Option<&[u8]>,
+    cfg: &Config,
+    terminator: u8,
+) -> io::Result<()> {
+    let write = |mut w: BufWriter<Box<dyn Write>>| -> io::Result<()> {
+        if let Some(h) = header {
+            w.write_all(h)?;
+            w.write_all(std::slice::from_ref(&terminator))?;
+        }
+        for (count, line) in groups {
+            // GNU `uniq -c` format: count right-justified in 7 columns, a space,
+            // then the line.
+            write!(w, "{count:>7} ")?;
+            w.write_all(line)?;
+            w.write_all(std::slice::from_ref(&terminator))?;
+        }
+        w.flush()
+    };
+    let sink: Box<dyn Write> = match &cfg.output {
+        Some(p) => Box::new(File::create(p)?),
+        None => Box::new(io::stdout().lock()),
+    };
+    write(BufWriter::new(sink))
 }
 
 fn check_sorted_simple(lines: &[&[u8]], cfg: &Config, opts: &KeyOpts) -> i32 {

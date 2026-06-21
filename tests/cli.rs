@@ -230,3 +230,25 @@ fn human_short_help_not_consumed() {
     assert_eq!(code, 0);
     assert_eq!(out, b"500\n2K\n");
 }
+
+// --- M3: fused dedup + count ------------------------------------------------
+
+#[test]
+fn count_like_uniq_c() {
+    assert_eq!(
+        run(
+            &["--count"],
+            "banana\napple\nbanana\ncherry\napple\nbanana\n"
+        ),
+        "      2 apple\n      3 banana\n      1 cherry\n"
+    );
+}
+
+#[test]
+fn count_with_top_keeps_first_n_groups() {
+    // groups a=2, b=3, c=1; sorted a,b,c; top 2 keeps a and b.
+    assert_eq!(
+        run(&["--count", "--top", "2"], "c\na\na\nb\nb\nb\n"),
+        "      2 a\n      3 b\n"
+    );
+}

@@ -84,6 +84,14 @@ for size in 0 1 5 50 500; do
   check "words -fu n=$size"    -f -u
   check "words -ru n=$size"    -r -u
 
+  # --count must match `sort | uniq -c`
+  total=$((total+1))
+  cg=$(sort "$input" | uniq -c); cf=$("$XORT" --count "$input" 2>/dev/null)
+  if [ "$cg" != "$cf" ]; then
+    fail=$((fail+1)); echo "MISMATCH [words --count n=$size]"
+    diff <(printf '%s' "$cg") <(printf '%s' "$cf") | head -6; echo "---"
+  fi
+
   input="$tmp/nums.$size"; gen_nums "$size" > "$input"
   check "nums -n n=$size"      -n
   check "nums -nr n=$size"     -n -r
