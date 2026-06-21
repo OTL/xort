@@ -1,6 +1,6 @@
 [package]
 name = "xort"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "A fast, modern, parallel drop-in replacement for the Unix sort command"
 license = "MIT"
