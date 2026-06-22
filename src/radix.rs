@@ -7,9 +7,12 @@
 //! fall back to the whole-line byte comparison unless `-s`/`-u` suppress it
 //! (then input order is preserved, which the radix's stability gives for free).
 //!
-//! Any non-integer key (a fraction, an exponent, an out-of-range magnitude)
-//! makes [`try_numeric_radix`] return `None`, and the engine falls back to the
-//! arbitrary-precision [`crate::compare::NumericKey`] comparison path.
+//! A key that isn't an exact `i64` — a fractional part, or a magnitude past
+//! `i64` range — makes [`try_numeric_radix`] return `None`, and the engine
+//! falls back to the arbitrary-precision [`crate::compare::NumericKey`]
+//! comparison path. (Exponent notation like `1e3` is not special: both paths,
+//! like GNU `sort -n`, read the leading integer `1` and treat `e3` as trailing
+//! text, so it stays on the radix path.)
 
 use crate::config::Config;
 use rayon::prelude::*;

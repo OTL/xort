@@ -16,14 +16,16 @@ gen_words() { # random short ASCII words, some duplicates, mixed case
     for(i=0;i<n;i++){ print w[int(rand()*10)] }
   }'
 }
-gen_nums() { # random ints/floats incl. negatives and junk
+gen_nums() { # random ints/floats incl. negatives, '+' and junk (forces the
+             # NumericKey fallback path via the floats, and checks '+' there)
   awk -v n="$1" 'BEGIN{
     srand(7+n);
     for(i=0;i<n;i++){
-      r=int(rand()*5);
+      r=int(rand()*6);
       if(r==0) print int(rand()*2000)-1000;
       else if(r==1) printf "%.2f\n", rand()*100-50;
       else if(r==2) print "abc"; else if(r==3) print "";
+      else if(r==4) printf "+%d\n", int(rand()*1000);  # GNU -n: '+' is non-numeric (value 0)
       else print int(rand()*1000000);
     }
   }'

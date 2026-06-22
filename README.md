@@ -66,8 +66,9 @@ Measured on 10M integers (4 cores, `LC_ALL=C`), it cuts `-n` from **3.41 s →
 low-cardinality data — about **1.4× faster than xort's own comparison path**, and
 **~2.5× faster than GNU `sort -n`** (6.22 s / 3.99 s in the same run). Output
 stays byte-identical to GNU (value order, whole-line tie-break, and `+` treated
-as non-numeric like GNU); any fraction/exponent/overflow transparently falls back
-to the arbitrary-precision comparison path.
+as non-numeric like GNU — true on both the radix and the comparison paths); a
+fractional value or an out-of-`i64`-range magnitude transparently falls back to
+the arbitrary-precision comparison path.
 
 Correctness is independently checked against GNU `sort` by
 [`scripts/difftest.sh`](scripts/difftest.sh).
