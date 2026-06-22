@@ -59,6 +59,12 @@ comparison. A single key is now ~1.8× faster than GNU `sort -k`; multi-key sort
 since chasing several precomputed keys per record trades parse cost for cache
 misses. `results.md` has the per-case numbers.
 
+Global numeric sort (`-n`) takes an **integer radix fast path**: when every
+line's value is an exact `i64`, a stable LSD radix replaces the comparison sort
+(output stays byte-identical to GNU — value order, whole-line tie-break, and
+`+` treated as non-numeric like GNU). Any fraction/exponent/overflow transparently
+falls back to the arbitrary-precision comparison path.
+
 Correctness is independently checked against GNU `sort` by
 [`scripts/difftest.sh`](scripts/difftest.sh).
 

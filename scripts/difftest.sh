@@ -28,6 +28,22 @@ gen_nums() { # random ints/floats incl. negatives and junk
     }
   }'
 }
+gen_ints() { # pure integers (no fractions) to exercise the -n radix fast path
+  awk -v n="$1" 'BEGIN{
+    srand(23+n);
+    j[0]="0";j[1]="abc";j[2]="";j[3]="-";
+    for(i=0;i<n;i++){
+      r=int(rand()*8);
+      if(r==0) print int(rand()*200)-100;                 # small +/-
+      else if(r==1) print int(rand()*1000000)-500000;     # wide range
+      else if(r==2) printf "%07d\n", int(rand()*1000);     # leading zeros
+      else if(r==3) printf "+%d\n", int(rand()*1000);      # explicit plus
+      else if(r==4) print "-" int(rand()*1000);            # negative text
+      else if(r==5) print j[int(rand()*4)];                # zero/junk/empty
+      else print int(rand()*50);                           # low-cardinality dups
+    }
+  }'
+}
 gen_table() { # CSV-ish rows with several typed columns, space and colon variants
   awk -v n="$1" 'BEGIN{
     srand(11+n);
@@ -97,6 +113,14 @@ for size in 0 1 5 50 500; do
   check "nums -nr n=$size"     -n -r
   check "nums -nu n=$size"     -n -u
   check "nums -g n=$size"      -g
+
+  # pure integers exercise the -n radix fast path (byte-identical to GNU)
+  input="$tmp/ints.$size"; gen_ints "$size" > "$input"
+  check "ints -n n=$size"      -n
+  check "ints -nr n=$size"     -n -r
+  check "ints -nu n=$size"     -n -u
+  check "ints -nur n=$size"    -n -u -r
+  check "ints -ns n=$size"     -n -s
 
   # -k / -t field keys (whitespace-separated table)
   input="$tmp/table.$size"; gen_table "$size" > "$input"

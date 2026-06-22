@@ -17,6 +17,7 @@ pub mod external;
 pub mod format;
 pub mod input;
 pub mod key;
+pub mod radix;
 
 pub use config::Config;
 pub use engine::{run, Outcome, Stats};
