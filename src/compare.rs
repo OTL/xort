@@ -52,9 +52,11 @@ fn strip_trailing_zeros(s: &[u8]) -> &[u8] {
 fn split_number(s: &[u8]) -> (bool, &[u8], &[u8]) {
     let s = skip_blanks(s);
     let mut i = 0;
+    // GNU `sort -n` accepts a leading '-' but NOT '+': "+5" is the value 0 (the
+    // '+' is non-numeric). This matches the radix fast path (`crate::radix`).
     let mut neg = false;
-    if i < s.len() && (s[i] == b'+' || s[i] == b'-') {
-        neg = s[i] == b'-';
+    if i < s.len() && s[i] == b'-' {
+        neg = true;
         i += 1;
     }
     let int_start = i;
@@ -524,6 +526,15 @@ mod tests {
         assert_eq!(n("abc", "5"), Less);
         assert_eq!(n("abc", "-5"), Greater);
         assert_eq!(n("  42", "42"), Equal); // leading blanks skipped
+    }
+
+    #[test]
+    fn numeric_plus_is_not_a_sign() {
+        // GNU `sort -n` does not accept a leading '+': "+5" is the value 0,
+        // matching the radix fast path (and unlike `-g`'s strtod parsing).
+        assert_eq!(n("+5", "0"), Equal);
+        assert_eq!(n("+5", "5"), Less); // +5 == 0 < 5
+        assert_eq!(n("+5", "-1"), Greater); // 0 > -1
     }
 
     #[test]
