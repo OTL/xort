@@ -1066,3 +1066,33 @@ fn corrupt_compressed_input_exits_2() {
     assert_eq!(xort(&[f.str()], b"").1, 2);
     assert_eq!(xort(&["-S", "1K", f.str()], b"").1, 2);
 }
+
+// --- Tier-2: integer radix fast path for -n (byte-identical to GNU) ---------
+
+#[test]
+fn radix_numeric_basic_and_tiebreak() {
+    // Pure integers take the radix path; equal values tie-break by whole line.
+    assert_eq!(run(&["-n"], "10\n2\n1\n10\n"), "1\n2\n10\n10\n");
+    assert_eq!(run(&["-n"], "5\n0000005\n"), "0000005\n5\n");
+}
+
+#[test]
+fn radix_numeric_plus_sign_is_zero_like_gnu() {
+    // GNU `sort -n` does not accept a leading '+': "+5"/"+1" are value 0 and
+    // sort among the zeros, byte-ordered, below the positive 3.
+    assert_eq!(run(&["-n"], "+5\n3\n+1\n-2\n"), "-2\n+1\n+5\n3\n");
+}
+
+#[test]
+fn radix_numeric_reverse_unique_stable() {
+    assert_eq!(run(&["-n", "-r"], "1\n3\n2\n"), "3\n2\n1\n");
+    // -u dedups by value, keeping the first in input order (stable).
+    assert_eq!(run(&["-n", "-u"], "5\n0000005\n5\n3\n"), "3\n5\n");
+    assert_eq!(run(&["-n", "-u", "-r"], "5\n0000005\n3\n"), "5\n3\n");
+}
+
+#[test]
+fn radix_numeric_negatives_and_top() {
+    assert_eq!(run(&["-n"], "-1\n2\n-3\n0\n"), "-3\n-1\n0\n2\n");
+    assert_eq!(run(&["-n", "--top", "2"], "9\n1\n5\n3\n"), "1\n3\n");
+}

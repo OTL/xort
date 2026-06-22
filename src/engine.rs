@@ -295,6 +295,13 @@ fn byte_order<'a>(
 
 /// Numeric path with decorate-sort-undecorate (no `-k`).
 fn numeric_order<'a>(lines: Vec<&'a [u8]>, cfg: &Config) -> (Vec<&'a [u8]>, usize) {
+    // Integer fast path: when every key is an exact i64, a stable LSD radix
+    // sort replaces the comparison sort with byte-identical output. Any
+    // non-integer key makes this return None and we fall back below.
+    if let Some(res) = crate::radix::try_numeric_radix(&lines, cfg) {
+        return res;
+    }
+
     let stable = stable_for(cfg);
     let mut dec: Vec<(NumericKey<'a>, &'a [u8])> = lines
         .into_par_iter()
