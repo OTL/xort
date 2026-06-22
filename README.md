@@ -15,10 +15,35 @@ tool simply can't do.
 
 > **Status:** feature-complete for v1. GNU-compatible sort with field keys and
 > all type comparators, external merge sort, fused `--top`/`--count`, CSV/JSON
-> awareness, and UX polish — differentially tested against GNU `sort` (130 cases).
+> awareness, and UX polish — differentially tested against GNU `sort` (155 cases).
 
 [ripgrep]: https://github.com/BurntSushi/ripgrep
 [fd]: https://github.com/sharkdp/fd
+
+## Features
+
+- ⚡ **Parallel by default** — uses every core. ~1.7–2.4× faster than GNU `sort`
+  on text, and an **integer radix fast path** makes `-n` ~2.5× faster on whole
+  numbers (and never slower elsewhere — it transparently falls back).
+- 🎯 **Drop-in compatible** — the GNU flags you already know (`-n -k -t -u -r -s
+  -c -m -h -V -M -g -b -f -z -o -S -T --parallel`), with output **byte-identical
+  to `LC_ALL=C sort`**, differentially tested against GNU (155 cases).
+- 🧠 **Every ordering GNU has** — numeric, general-float, human sizes
+  (`2K`/`1G`), version/natural (`v2 < v10`), and month — **plus date/time**
+  (`--date-sort`: ISO-8601, Unix epoch, Apache/syslog logs).
+- 📊 **Things GNU can't do** — `--top N` (bounded selection, far cheaper than
+  `sort | head`), `--count` (built-in `sort | uniq -c`), and `--header` (pin the
+  header row, sort the rest).
+- 🗂️ **Structured data** — quoting-correct `--csv`/`--tsv` (sort by column name
+  *or* index) and `--json`/`--jsonl` (sort by a `.path.to.field`).
+- 🗜️ **Transparent compression** — gzip/zstd input auto-detected by magic bytes
+  (works for stdin and mis-named files); output compressed by `-o` extension.
+  No more piping through `gzip`/`zstd`.
+- 💾 **Scales past RAM** — `-S` external merge sort spills to disk and merges
+  each chunk in parallel.
+- ✨ **UX polish** — sort-key highlighting (`--color`), a `--progress` bar/ETA,
+  `--stats`, shell completions (`--completions`), and a generated man page
+  (`--man`).
 
 ## Why
 
