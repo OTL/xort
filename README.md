@@ -60,10 +60,14 @@ since chasing several precomputed keys per record trades parse cost for cache
 misses. `results.md` has the per-case numbers.
 
 Global numeric sort (`-n`) takes an **integer radix fast path**: when every
-line's value is an exact `i64`, a stable LSD radix replaces the comparison sort
-(output stays byte-identical to GNU — value order, whole-line tie-break, and
-`+` treated as non-numeric like GNU). Any fraction/exponent/overflow transparently
-falls back to the arbitrary-precision comparison path.
+line's value is an exact `i64`, a stable LSD radix replaces the comparison sort.
+Measured on 10M integers (4 cores, `LC_ALL=C`), it cuts `-n` from **3.41 s →
+2.46 s** on wide-range (mostly unique) data and **2.39 s → 1.77 s** on
+low-cardinality data — about **1.4× faster than xort's own comparison path**, and
+**~2.5× faster than GNU `sort -n`** (6.22 s / 3.99 s in the same run). Output
+stays byte-identical to GNU (value order, whole-line tie-break, and `+` treated
+as non-numeric like GNU); any fraction/exponent/overflow transparently falls back
+to the arbitrary-precision comparison path.
 
 Correctness is independently checked against GNU `sort` by
 [`scripts/difftest.sh`](scripts/difftest.sh).
